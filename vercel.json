@@ -1,0 +1,36 @@
+{
+  "version": 2,
+  "builds": [
+    {
+      "src": "api/**/*.py",
+      "use": "@vercel/python"
+    }
+  ],
+  "routes": [
+    {
+      "src": "/api/webhook",
+      "methods": ["POST"],
+      "dest": "/api/webhook.py"
+    },
+    {
+      "src": "/api/cron_daily_summary",
+      "methods": ["GET"],
+      "dest": "/api/cron_daily_summary.py"
+    },
+    {
+      "src": "/api/cron_midnight_reset",
+      "methods": ["GET"],
+      "dest": "/api/cron_midnight_reset.py"
+    }
+  ],
+  "crons": [
+    {
+      "path": "/api/cron_daily_summary",
+      "schedule": "0 22 * * *"
+    },
+    {
+      "path": "/api/cron_midnight_reset",
+      "schedule": "0 0 * * *"
+    }
+  ]
+}

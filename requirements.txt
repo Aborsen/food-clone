@@ -1,0 +1,4 @@
+openai>=1.0
+httpx>=0.25
+libsql-experimental>=0.0.34
+python-dotenv>=1.0
