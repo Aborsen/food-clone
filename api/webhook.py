@@ -10,7 +10,7 @@ _ROOT = os.path.dirname(_THIS)
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
-from lib.config import WEBHOOK_SECRET, RECALC_PROMPT
+from lib.config import WEBHOOK_SECRET, RECALC_PROMPT, ALLOWED_USER_IDS
 from lib.database import (
     get_conn,
     init_db,
@@ -71,6 +71,24 @@ from lib.formatters import (
 )
 
 
+NOT_AUTHORIZED = "🔒 Вибач, цей бот працює тільки для авторизованих користувачів."
+
+
+def _is_allowed(user_id: int | None) -> bool:
+    if not ALLOWED_USER_IDS:
+        return True  # empty set = allow everyone
+    return user_id in ALLOWED_USER_IDS
+
+
+def _reject_user(conn, cb: dict) -> None:
+    """Send rejection for unauthorized callback_query."""
+    message = cb.get("message", {})
+    chat_id = message.get("chat", {}).get("id")
+    if chat_id:
+        send_message(chat_id, NOT_AUTHORIZED)
+    answer_callback_query(cb["id"], "🔒 Не авторизовано")
+
+
 class handler(BaseHTTPRequestHandler):
     def do_POST(self):
         secret = self.headers.get("X-Telegram-Bot-Api-Secret-Token", "")
@@ -114,7 +132,12 @@ def process_update(update: dict) -> None:
         cleanup_stale_pending(conn, minutes=10)
         cleanup_stale_analyses(conn, minutes=10)
 
+        # Extract user_id from either callback_query or message
         if "callback_query" in update:
+            cb_user_id = update["callback_query"].get("from", {}).get("id")
+            if not _is_allowed(cb_user_id):
+                _reject_user(conn, update["callback_query"])
+                return
             handle_callback(conn, update["callback_query"])
             return
 
@@ -126,6 +149,13 @@ def process_update(update: dict) -> None:
         user_id = user.get("id")
         username = user.get("username") or user.get("first_name")
         first_name = user.get("first_name")
+
+        if not _is_allowed(user_id):
+            chat_id = message.get("chat", {}).get("id")
+            if chat_id:
+                send_message(chat_id, NOT_AUTHORIZED)
+            return
+
         if user_id:
             upsert_user(conn, user_id, username)
 

@@ -21,6 +21,9 @@ VERCEL_URL = _env("VERCEL_URL")
 DATABASE_URL = _env("DATABASE_URL") or _env("POSTGRES_URL")
 CRON_SECRET = _env("CRON_SECRET")
 
+# Telegram user IDs allowed to use this bot. Empty = allow everyone.
+ALLOWED_USER_IDS: set[int] = {169742339, 699256397}  # ogswed, Iryna_Horlenko
+
 
 USER_PROFILE = {
     "age": 30,

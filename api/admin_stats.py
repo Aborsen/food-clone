@@ -12,7 +12,7 @@ if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
 from lib.config import CRON_SECRET
-from lib.database import get_conn, init_db
+from lib.database import get_conn, init_db, delete_meal, recalc_daily_log
 
 
 def _authorized(headers) -> bool:
@@ -57,6 +57,58 @@ class handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.end_headers()
         self.wfile.write(html.encode("utf-8"))
+
+    def do_POST(self):
+        """Handle admin actions (delete meal) via AJAX."""
+        # Auth: check token in query string or Authorization header
+        authed = _authorized(self.headers)
+        if not authed:
+            token = _token_from_query(self.path)
+            if CRON_SECRET and token == CRON_SECRET:
+                authed = True
+        if not authed:
+            self._json_response(401, {"ok": False, "error": "unauthorized"})
+            return
+
+        try:
+            length = int(self.headers.get("Content-Length", "0") or 0)
+            body = json.loads(self.rfile.read(length).decode("utf-8")) if length else {}
+        except Exception:
+            self._json_response(400, {"ok": False, "error": "bad json"})
+            return
+
+        action = body.get("action")
+        if action == "delete_meal":
+            meal_id = body.get("meal_id")
+            user_id = body.get("user_id")
+            if not meal_id or not user_id:
+                self._json_response(400, {"ok": False, "error": "meal_id and user_id required"})
+                return
+            conn = get_conn()
+            try:
+                init_db(conn)
+                deleted = delete_meal(conn, int(meal_id), int(user_id))
+                if not deleted:
+                    self._json_response(404, {"ok": False, "error": "meal not found"})
+                    return
+                recalc_daily_log(conn, int(user_id), deleted["date"])
+                self._json_response(200, {"ok": True, "deleted": deleted["description"][:60]})
+            except Exception as e:
+                print("admin delete error:", traceback.format_exc(), flush=True)
+                self._json_response(500, {"ok": False, "error": str(e)})
+            finally:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+        else:
+            self._json_response(400, {"ok": False, "error": f"unknown action: {action}"})
+
+    def _json_response(self, code: int, data: dict):
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json")
+        self.end_headers()
+        self.wfile.write(json.dumps(data).encode())
 
 
 def build_html() -> str:
@@ -115,7 +167,7 @@ def build_html() -> str:
     for r in meal_rows:
         mid, uid, uname, date, mt, desc, cal, p, c, f, fib, sug, ts = r
         meals_tbody += (
-            f"<tr>"
+            f"<tr data-mid='{mid}' data-uid='{uid}'>"
             f"<td>{_esc((ts or '')[:16])}</td>"
             f"<td>{_esc(uname)} <span class='uid'>({uid})</span></td>"
             f"<td>{_esc(date)}</td>"
@@ -127,6 +179,7 @@ def build_html() -> str:
             f"<td class='num'>{round(f or 0)}</td>"
             f"<td class='num'>{round(fib or 0)}</td>"
             f"<td class='num'>{round(sug or 0)}</td>"
+            f"<td><button class='btn-del' onclick='deleteMeal(this)' title='Видалити'>🗑</button></td>"
             f"</tr>\n"
         )
 
@@ -172,6 +225,15 @@ def build_html() -> str:
   /* Scrollable table wrapper */
   .table-wrap {{ max-height: 70vh; overflow: auto; border: 1px solid #1e1e3a; border-radius: 8px; }}
   .table-wrap table {{ margin: 0; }}
+
+  .btn-del {{
+    background: transparent; border: 1px solid #e94560; color: #e94560;
+    border-radius: 6px; padding: 4px 10px; cursor: pointer; font-size: 1em;
+    transition: all 0.15s;
+  }}
+  .btn-del:hover {{ background: #e94560; color: #fff; }}
+  .btn-del:disabled {{ opacity: 0.3; cursor: default; }}
+  .btn-del.done {{ border-color: #4caf50; color: #4caf50; }}
 
   @media (max-width: 700px) {{
     .cards {{ flex-direction: column; }}
@@ -234,6 +296,7 @@ def build_html() -> str:
   <th data-col="8" data-type="num">Ж <span class="arrow">▲</span></th>
   <th data-col="9" data-type="num">Кліт <span class="arrow">▲</span></th>
   <th data-col="10" data-type="num">Цук <span class="arrow">▲</span></th>
+  <th>Дія</th>
 </tr></thead>
 <tbody>{meals_tbody}</tbody>
 </table>
@@ -327,6 +390,44 @@ filterType.addEventListener('change', applyFilters);
 filterDateFrom.addEventListener('change', applyFilters);
 filterDateTo.addEventListener('change', applyFilters);
 applyFilters();
+
+/* --- Delete meal from admin --- */
+async function deleteMeal(btn) {{
+  const row = btn.closest('tr');
+  const mid = row.dataset.mid;
+  const uid = row.dataset.uid;
+  const desc = row.cells[4]?.textContent.trim() || '';
+  if (!confirm(`Видалити страву "${{desc}}"?`)) return;
+
+  btn.disabled = true;
+  btn.textContent = '...';
+  try {{
+    const url = window.location.pathname + window.location.search;
+    const resp = await fetch(url, {{
+      method: 'POST',
+      headers: {{'Content-Type': 'application/json'}},
+      body: JSON.stringify({{ action: 'delete_meal', meal_id: +mid, user_id: +uid }})
+    }});
+    const data = await resp.json();
+    if (data.ok) {{
+      row.style.transition = 'opacity 0.3s';
+      row.style.opacity = '0';
+      setTimeout(() => row.remove(), 300);
+      // Update total counter
+      const totalCard = document.querySelector('.card:nth-child(2) .num');
+      if (totalCard) totalCard.textContent = Math.max(0, parseInt(totalCard.textContent) - 1);
+      applyFilters();
+    }} else {{
+      alert('Помилка: ' + (data.error || 'невідома'));
+      btn.disabled = false;
+      btn.textContent = '🗑';
+    }}
+  }} catch(e) {{
+    alert('Мережева помилка: ' + e.message);
+    btn.disabled = false;
+    btn.textContent = '🗑';
+  }}
+}}
 </script>
 
 </body>
