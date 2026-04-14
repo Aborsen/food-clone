@@ -91,11 +91,11 @@ def moderation_keyboard() -> dict:
 def meals_list_keyboard(meals: list[dict]) -> dict:
     """Build inline keyboard with Delete/Edit buttons for each meal."""
     rows = []
-    for m in meals:
+    for i, m in enumerate(meals, 1):
         meal_id = m["id"]
         rows.append([
-            {"text": f"🗑 Видалити #{meal_id}", "callback_data": f"meal_del:{meal_id}"},
-            {"text": f"✏️ Змінити #{meal_id}", "callback_data": f"meal_edit:{meal_id}"},
+            {"text": f"🗑 Видалити {i}", "callback_data": f"meal_del:{meal_id}"},
+            {"text": f"✏️ Змінити {i}", "callback_data": f"meal_edit:{meal_id}"},
         ])
     return {"inline_keyboard": rows}
 
