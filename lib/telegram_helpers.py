@@ -74,6 +74,32 @@ def meal_type_keyboard() -> dict:
     }
 
 
+def moderation_keyboard() -> dict:
+    return {
+        "inline_keyboard": [
+            [
+                {"text": "✅ Прийняти", "callback_data": "mod:accept"},
+                {"text": "🔄 Перерахувати", "callback_data": "mod:recalc"},
+            ],
+            [
+                {"text": "✏️ Ввести вручну", "callback_data": "mod:manual"},
+            ],
+        ]
+    }
+
+
+def meals_list_keyboard(meals: list[dict]) -> dict:
+    """Build inline keyboard with Delete/Edit buttons for each meal."""
+    rows = []
+    for m in meals:
+        meal_id = m["id"]
+        rows.append([
+            {"text": f"🗑 Видалити #{meal_id}", "callback_data": f"meal_del:{meal_id}"},
+            {"text": f"✏️ Змінити #{meal_id}", "callback_data": f"meal_edit:{meal_id}"},
+        ])
+    return {"inline_keyboard": rows}
+
+
 def set_my_commands(commands: list[dict], language_code: str | None = None) -> dict:
     """Register the bot's native command menu (the blue 'Menu' button)."""
     payload: dict = {"commands": commands}

@@ -5,13 +5,12 @@ import sys
 import traceback
 from http.server import BaseHTTPRequestHandler
 
-# Ensure project root is on sys.path so `lib.*` imports resolve on Vercel
 _THIS = os.path.dirname(os.path.abspath(__file__))
 _ROOT = os.path.dirname(_THIS)
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
-from lib.config import WEBHOOK_SECRET
+from lib.config import WEBHOOK_SECRET, RECALC_PROMPT
 from lib.database import (
     get_conn,
     init_db,
@@ -20,17 +19,26 @@ from lib.database import (
     save_pending_text,
     pop_pending_entry,
     cleanup_stale_pending,
+    cleanup_stale_analyses,
+    save_pending_analysis,
+    get_pending_analysis,
+    pop_pending_analysis,
+    set_awaiting_manual,
     save_meal,
     upsert_daily_log_from_meal,
     get_today_log,
     get_history,
     get_meals_for_day,
+    delete_meal,
+    recalc_daily_log,
 )
 from lib.telegram_helpers import (
     send_message,
     answer_callback_query,
     get_file_bytes,
     meal_type_keyboard,
+    moderation_keyboard,
+    meals_list_keyboard,
 )
 from lib.openai_vision import analyze_photo, analyze_text
 from lib.openai_nutrition import suggest_meal
@@ -41,21 +49,25 @@ from lib.formatters import (
     format_history,
     format_day_detail,
     format_meal_logged,
+    format_meal_preview,
+    format_meals_list,
     PHOTO_PROMPT_MEAL_TYPE,
+    TEXT_PROMPT_MEAL_TYPE,
     ANALYZING_WAIT,
+    RECALC_WAIT,
     PHOTO_DOWNLOAD_FAILED,
     PHOTO_ANALYSIS_FAILED,
+    TEXT_ANALYSIS_FAILED,
     PENDING_EXPIRED,
+    MANUAL_INPUT_PROMPT,
+    MEAL_DELETED,
+    MEAL_EDIT_PROMPT,
+    MEAL_NOT_FOUND,
+    NO_MEALS_TO_MANAGE,
     UNKNOWN_COMMAND,
     SUGGEST_THINKING,
     SUGGEST_FAILED,
     HISTORY_USAGE,
-)
-
-TEXT_PROMPT_MEAL_TYPE = "📝 Записав твій опис! Що це за прийом їжі?"
-TEXT_ANALYSIS_FAILED = (
-    "Не зміг нормально розпарсити опис. Спробуй написати простіше — "
-    "наприклад: «курка 200г, рис 150г, броколі 100г». 🙂"
 )
 
 
@@ -100,6 +112,7 @@ def process_update(update: dict) -> None:
     try:
         init_db(conn)
         cleanup_stale_pending(conn, minutes=10)
+        cleanup_stale_analyses(conn, minutes=10)
 
         if "callback_query" in update:
             handle_callback(conn, update["callback_query"])
@@ -128,7 +141,14 @@ def process_update(update: dict) -> None:
             handle_command(conn, message, text, first_name)
             return
 
-        # Free-text entry: treat as a meal description
+        # Check if user is awaiting manual input for moderation
+        if user_id:
+            pending = get_pending_analysis(conn, user_id)
+            if pending and pending["awaiting_manual"]:
+                handle_manual_text_input(conn, message, text, pending)
+                return
+
+        # Otherwise: new meal via free text
         handle_text_entry(conn, message, text)
     finally:
         try:
@@ -137,7 +157,7 @@ def process_update(update: dict) -> None:
             pass
 
 
-# ---------- Handlers ----------
+# ---------- Photo / text entry ----------
 
 def handle_photo(conn, message: dict) -> None:
     chat_id = message["chat"]["id"]
@@ -155,23 +175,33 @@ def handle_text_entry(conn, message: dict, text: str) -> None:
     send_message(chat_id, TEXT_PROMPT_MEAL_TYPE, reply_markup=meal_type_keyboard())
 
 
+# ---------- Callback router ----------
+
 def handle_callback(conn, cb: dict) -> None:
-    cb_id = cb["id"]
     data = cb.get("data", "")
+    if data.startswith("meal_type:"):
+        handle_meal_type_callback(conn, cb)
+    elif data.startswith("mod:"):
+        handle_moderation_callback(conn, cb)
+    elif data.startswith("meal_del:") or data.startswith("meal_edit:"):
+        handle_meal_manage_callback(conn, cb)
+    else:
+        answer_callback_query(cb["id"], "Невідома дія")
+
+
+# ---------- Meal type selection → analyze → show preview ----------
+
+def handle_meal_type_callback(conn, cb: dict) -> None:
+    cb_id = cb["id"]
+    data = cb["data"]
     user_id = cb["from"]["id"]
     first_name = cb["from"].get("first_name")
     message = cb.get("message", {})
     chat_id = message.get("chat", {}).get("id", user_id)
 
-    if not data.startswith("meal_type:"):
-        answer_callback_query(cb_id, "Невідома дія")
-        return
-
     meal_type = data.split(":", 1)[1]
-    meal_ua = {"breakfast": "сніданок", "lunch": "обід", "dinner": "вечерю", "snack": "перекус"}.get(
-        meal_type, meal_type
-    )
-    answer_callback_query(cb_id, f"Аналізую твій {meal_ua}…")
+    meal_ua_map = {"breakfast": "сніданок", "lunch": "обід", "dinner": "вечерю", "snack": "перекус"}
+    answer_callback_query(cb_id, f"Аналізую твій {meal_ua_map.get(meal_type, meal_type)}…")
 
     entry = pop_pending_entry(conn, user_id)
     if entry is None:
@@ -181,8 +211,7 @@ def handle_callback(conn, cb: dict) -> None:
 
     send_message(chat_id, ANALYZING_WAIT)
 
-    analysis = None
-    raw = ""
+    analysis, raw = None, ""
     try:
         if file_id:
             try:
@@ -199,17 +228,133 @@ def handle_callback(conn, cb: dict) -> None:
             return
     except Exception as e:
         print("analysis error:", e, flush=True)
-        fail_msg = TEXT_ANALYSIS_FAILED if text_description else PHOTO_ANALYSIS_FAILED
-        send_message(chat_id, fail_msg)
+        send_message(chat_id, TEXT_ANALYSIS_FAILED if text_description else PHOTO_ANALYSIS_FAILED)
         return
 
-    # Persist. For text-origin meals we store an empty file_id.
-    save_meal(conn, user_id, meal_type, analysis, file_id or "", raw)
-    upsert_daily_log_from_meal(conn, user_id, analysis)
-    today_log = get_today_log(conn, user_id)
+    # Save analysis for moderation (NOT to meals yet)
+    save_pending_analysis(conn, user_id, meal_type, analysis, file_id, text_description, raw)
 
-    send_message(chat_id, format_meal_logged(meal_type, analysis, today_log, first_name))
+    # Show preview with ingredients + moderation buttons
+    send_message(chat_id, format_meal_preview(meal_type, analysis), reply_markup=moderation_keyboard())
 
+
+# ---------- Moderation: Accept / Recalculate / Manual ----------
+
+def handle_moderation_callback(conn, cb: dict) -> None:
+    cb_id = cb["id"]
+    action = cb["data"].split(":", 1)[1]  # "accept", "recalc", "manual"
+    user_id = cb["from"]["id"]
+    first_name = cb["from"].get("first_name")
+    message = cb.get("message", {})
+    chat_id = message.get("chat", {}).get("id", user_id)
+
+    if action == "accept":
+        answer_callback_query(cb_id, "✅ Записую!")
+        pending = pop_pending_analysis(conn, user_id)
+        if not pending:
+            send_message(chat_id, PENDING_EXPIRED)
+            return
+        analysis = pending["analysis"]
+        save_meal(conn, user_id, pending["meal_type"], analysis, pending["photo_file_id"] or "", pending["raw_response"])
+        upsert_daily_log_from_meal(conn, user_id, analysis)
+        today_log = get_today_log(conn, user_id)
+        send_message(chat_id, format_meal_logged(pending["meal_type"], analysis, today_log, first_name))
+
+    elif action == "recalc":
+        answer_callback_query(cb_id, "🔄 Перераховую…")
+        pending = get_pending_analysis(conn, user_id)
+        if not pending:
+            send_message(chat_id, PENDING_EXPIRED)
+            return
+        send_message(chat_id, RECALC_WAIT)
+
+        try:
+            if pending["photo_file_id"]:
+                image_bytes = get_file_bytes(pending["photo_file_id"])
+                analysis, raw = analyze_photo(image_bytes, retry_prompt=RECALC_PROMPT)
+            elif pending["text_description"]:
+                analysis, raw = analyze_text(pending["text_description"], retry_prompt=RECALC_PROMPT)
+            else:
+                send_message(chat_id, PENDING_EXPIRED)
+                return
+        except Exception as e:
+            print("recalc error:", e, flush=True)
+            send_message(chat_id, PHOTO_ANALYSIS_FAILED)
+            return
+
+        save_pending_analysis(conn, user_id, pending["meal_type"], analysis, pending["photo_file_id"], pending["text_description"], raw)
+        send_message(chat_id, format_meal_preview(pending["meal_type"], analysis), reply_markup=moderation_keyboard())
+
+    elif action == "manual":
+        answer_callback_query(cb_id, "✏️ Чекаю на текст")
+        pending = get_pending_analysis(conn, user_id)
+        if not pending:
+            # Create a minimal pending_analyses row so the state machine works
+            send_message(chat_id, PENDING_EXPIRED)
+            return
+        set_awaiting_manual(conn, user_id)
+        send_message(chat_id, MANUAL_INPUT_PROMPT)
+
+
+def handle_manual_text_input(conn, message: dict, text: str, pending: dict) -> None:
+    """User typed free text while in awaiting_manual state."""
+    chat_id = message["chat"]["id"]
+    user_id = message["from"]["id"]
+
+    send_message(chat_id, ANALYZING_WAIT)
+
+    try:
+        analysis, raw = analyze_text(text)
+    except Exception as e:
+        print("manual text analysis error:", e, flush=True)
+        send_message(chat_id, TEXT_ANALYSIS_FAILED)
+        return
+
+    # Update pending analysis with new result; clear awaiting_manual
+    save_pending_analysis(conn, user_id, pending["meal_type"], analysis, pending["photo_file_id"], text, raw)
+    send_message(chat_id, format_meal_preview(pending["meal_type"], analysis), reply_markup=moderation_keyboard())
+
+
+# ---------- Meal management: Delete / Edit ----------
+
+def handle_meal_manage_callback(conn, cb: dict) -> None:
+    cb_id = cb["id"]
+    data = cb["data"]
+    user_id = cb["from"]["id"]
+    message = cb.get("message", {})
+    chat_id = message.get("chat", {}).get("id", user_id)
+
+    if data.startswith("meal_del:"):
+        meal_id = int(data.split(":", 1)[1])
+        answer_callback_query(cb_id, "🗑 Видаляю…")
+        deleted = delete_meal(conn, meal_id, user_id)
+        if not deleted:
+            send_message(chat_id, MEAL_NOT_FOUND)
+            return
+        recalc_daily_log(conn, user_id, deleted["date"])
+        send_message(
+            chat_id,
+            MEAL_DELETED.format(dish=deleted["description"][:40], cal=round(deleted["calories"])),
+        )
+
+    elif data.startswith("meal_edit:"):
+        meal_id = int(data.split(":", 1)[1])
+        answer_callback_query(cb_id, "✏️ Готуюсь до заміни…")
+        deleted = delete_meal(conn, meal_id, user_id)
+        if not deleted:
+            send_message(chat_id, MEAL_NOT_FOUND)
+            return
+        recalc_daily_log(conn, user_id, deleted["date"])
+        # Create a pending_analyses row in awaiting_manual mode so next text triggers re-analysis
+        save_pending_analysis(conn, user_id, deleted["meal_type"], {}, None, None, "")
+        set_awaiting_manual(conn, user_id, meal_type=deleted["meal_type"])
+        send_message(
+            chat_id,
+            MEAL_EDIT_PROMPT.format(dish=deleted["description"][:40]),
+        )
+
+
+# ---------- Commands ----------
 
 def handle_command(conn, message: dict, text: str, first_name: str | None) -> None:
     chat_id = message["chat"]["id"]
@@ -230,6 +375,15 @@ def handle_command(conn, message: dict, text: str, first_name: str | None) -> No
     if cmd == "/today":
         log = get_today_log(conn, user_id)
         send_message(chat_id, format_today_progress(log, first_name))
+        return
+
+    if cmd == "/meals":
+        log = get_today_log(conn, user_id)
+        meals = get_meals_for_day(conn, user_id, log["date"])
+        if not meals:
+            send_message(chat_id, NO_MEALS_TO_MANAGE)
+            return
+        send_message(chat_id, format_meals_list(meals), reply_markup=meals_list_keyboard(meals))
         return
 
     if cmd == "/history":

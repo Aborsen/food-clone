@@ -96,8 +96,16 @@ Analyze this food photo and return a JSON response with EXACTLY this structure:
   "overall_assessment": "Brief note on how this meal fits the user's needs"
 }
 
+IMPORTANT for ingredients: Be SPECIFIC about types. Instead of "м'ясо" say "куряча грудка", "свиняча вирізка", "яловичий стейк". Instead of "риба" say "філе лосося", "тріска", "тунець". Same for grains, oils, cheeses — name the exact variety. Each ingredient should have a realistic estimated weight in grams.
+
 Return ONLY valid JSON, no markdown fences, no extra text.
 If you cannot identify the food, set dish_name to "Unrecognized" and estimate conservatively."""
+
+
+RECALC_PROMPT = (
+    "Перерахуй уважніше. Будь точнішим: тип м'яса (куряча грудка, свиняча вирізка тощо), "
+    "розмір порції, конкретні інгредієнти та їх вагу. Перевір ще раз калорійність."
+)
 
 
 SUMMARY_PROMPT_TEMPLATE = """You are a nutrition coach for a 30-year-old woman with Crohn's disease who is strength training to build muscle. Her daily target is 2,000 calories with a 30/45/25 protein/carbs/fat split.

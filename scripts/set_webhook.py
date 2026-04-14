@@ -24,15 +24,16 @@ except ImportError:
 # Ukrainian descriptions (max 256 chars each, must be lowercase-friendly).
 COMMANDS_UA = [
     {"command": "today", "description": "📊 Прогрес за сьогодні"},
+    {"command": "meals", "description": "📋 Список страв (видалити / змінити)"},
     {"command": "history", "description": "📅 Останні 7 днів"},
     {"command": "history_detail", "description": "🔎 Страви за конкретний день (YYYY-MM-DD)"},
     {"command": "suggest_meal", "description": "🍽️ Ідея страви під залишок дня"},
     {"command": "help", "description": "❓ Список команд"},
 ]
 
-# English fallback shown to users whose Telegram language is not uk.
 COMMANDS_EN = [
     {"command": "today", "description": "Today's progress"},
+    {"command": "meals", "description": "Manage today's meals (delete / edit)"},
     {"command": "history", "description": "Last 7 days"},
     {"command": "history_detail", "description": "Meals on a specific day (YYYY-MM-DD)"},
     {"command": "suggest_meal", "description": "AI meal suggestion"},

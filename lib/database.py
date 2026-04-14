@@ -90,10 +90,19 @@ def init_db(conn=None) -> None:
                 created_at TEXT
             )
         """)
-        # Migration: text-entry support. Add optional text_description column.
+        cur.execute("ALTER TABLE pending_photos ADD COLUMN IF NOT EXISTS text_description TEXT")
         cur.execute("""
-            ALTER TABLE pending_photos
-            ADD COLUMN IF NOT EXISTS text_description TEXT
+            CREATE TABLE IF NOT EXISTS pending_analyses (
+                id BIGSERIAL PRIMARY KEY,
+                user_id BIGINT NOT NULL,
+                meal_type TEXT NOT NULL,
+                analysis_json TEXT NOT NULL,
+                photo_file_id TEXT,
+                text_description TEXT,
+                raw_response TEXT,
+                awaiting_manual INTEGER DEFAULT 0,
+                created_at TEXT NOT NULL
+            )
         """)
     conn.commit()
     if close_after:
@@ -140,11 +149,7 @@ def save_pending_text(conn, user_id: int, text_description: str) -> None:
 
 
 def pop_pending_entry(conn, user_id: int) -> Optional[tuple[Optional[str], Optional[str]]]:
-    """Return (photo_file_id, text_description) for the most recent pending entry, then delete all.
-
-    Exactly one of the two fields will be non-null.
-    Returns None if nothing is pending.
-    """
+    """Return (photo_file_id, text_description) then delete all pending for user."""
     with conn.cursor() as cur:
         cur.execute(
             "SELECT photo_file_id, text_description FROM pending_photos "
@@ -160,18 +165,100 @@ def pop_pending_entry(conn, user_id: int) -> Optional[tuple[Optional[str], Optio
     return (file_id, text)
 
 
-# Backwards-compat alias (not used after the text-entry refactor).
-def pop_pending_photo(conn, user_id: int) -> Optional[str]:
-    result = pop_pending_entry(conn, user_id)
-    if result is None:
-        return None
-    return result[0]
-
-
 def cleanup_stale_pending(conn, minutes: int = 10) -> None:
     cutoff = (datetime.now(timezone.utc) - timedelta(minutes=minutes)).isoformat()
     with conn.cursor() as cur:
         cur.execute("DELETE FROM pending_photos WHERE created_at < %s", (cutoff,))
+    conn.commit()
+
+
+# ---------- Pending analyses (moderation step) ----------
+
+def save_pending_analysis(
+    conn,
+    user_id: int,
+    meal_type: str,
+    analysis: dict,
+    photo_file_id: Optional[str],
+    text_description: Optional[str],
+    raw_response: str,
+) -> None:
+    """Store an AI analysis for user review. One row per user (replaces previous)."""
+    with conn.cursor() as cur:
+        cur.execute("DELETE FROM pending_analyses WHERE user_id = %s", (user_id,))
+        cur.execute(
+            """INSERT INTO pending_analyses
+               (user_id, meal_type, analysis_json, photo_file_id, text_description,
+                raw_response, awaiting_manual, created_at)
+               VALUES (%s, %s, %s, %s, %s, %s, 0, %s)""",
+            (
+                user_id,
+                meal_type,
+                json.dumps(analysis, ensure_ascii=False),
+                photo_file_id,
+                text_description,
+                raw_response,
+                _now_iso(),
+            ),
+        )
+    conn.commit()
+
+
+def get_pending_analysis(conn, user_id: int) -> Optional[dict]:
+    """Non-destructive read of the user's pending analysis."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """SELECT id, meal_type, analysis_json, photo_file_id, text_description,
+                      raw_response, awaiting_manual, created_at
+               FROM pending_analyses WHERE user_id = %s ORDER BY id DESC LIMIT 1""",
+            (user_id,),
+        )
+        row = cur.fetchone()
+    if not row:
+        return None
+    return {
+        "id": row[0],
+        "meal_type": row[1],
+        "analysis": json.loads(row[2]),
+        "photo_file_id": row[3],
+        "text_description": row[4],
+        "raw_response": row[5],
+        "awaiting_manual": bool(row[6]),
+        "created_at": row[7],
+    }
+
+
+def pop_pending_analysis(conn, user_id: int) -> Optional[dict]:
+    """Read + delete the user's pending analysis."""
+    entry = get_pending_analysis(conn, user_id)
+    if entry is None:
+        return None
+    with conn.cursor() as cur:
+        cur.execute("DELETE FROM pending_analyses WHERE user_id = %s", (user_id,))
+    conn.commit()
+    return entry
+
+
+def set_awaiting_manual(conn, user_id: int, meal_type: Optional[str] = None) -> None:
+    """Flag the user's pending analysis as awaiting manual text input."""
+    with conn.cursor() as cur:
+        if meal_type:
+            cur.execute(
+                "UPDATE pending_analyses SET awaiting_manual = 1, meal_type = %s WHERE user_id = %s",
+                (meal_type, user_id),
+            )
+        else:
+            cur.execute(
+                "UPDATE pending_analyses SET awaiting_manual = 1 WHERE user_id = %s",
+                (user_id,),
+            )
+    conn.commit()
+
+
+def cleanup_stale_analyses(conn, minutes: int = 10) -> None:
+    cutoff = (datetime.now(timezone.utc) - timedelta(minutes=minutes)).isoformat()
+    with conn.cursor() as cur:
+        cur.execute("DELETE FROM pending_analyses WHERE created_at < %s", (cutoff,))
     conn.commit()
 
 
@@ -199,9 +286,9 @@ def save_meal(
                 _today_str(),
                 meal_type,
                 analysis.get("description") or analysis.get("dish_name", ""),
-                json.dumps(analysis.get("ingredients", [])),
-                json.dumps(analysis.get("allergen_flags", [])),
-                json.dumps(analysis.get("crohn_flags", [])),
+                json.dumps(analysis.get("ingredients", []), ensure_ascii=False),
+                json.dumps(analysis.get("allergen_flags", []), ensure_ascii=False),
+                json.dumps(analysis.get("crohn_flags", []), ensure_ascii=False),
                 float(nutrition.get("calories", 0) or 0),
                 float(nutrition.get("protein_g", 0) or 0),
                 float(nutrition.get("carbs_g", 0) or 0),
@@ -219,7 +306,7 @@ def save_meal(
 def get_meals_for_day(conn, user_id: int, date: str) -> list[dict]:
     with conn.cursor() as cur:
         cur.execute(
-            """SELECT meal_type, description, ingredients, allergen_warnings, crohn_warnings,
+            """SELECT id, meal_type, description, ingredients, allergen_warnings, crohn_warnings,
                       calories, protein_g, carbs_g, fat_g, fiber_g, sugar_g, created_at
                FROM meals WHERE user_id = %s AND date = %s ORDER BY id ASC""",
             (user_id, date),
@@ -227,21 +314,65 @@ def get_meals_for_day(conn, user_id: int, date: str) -> list[dict]:
         rows = cur.fetchall()
     return [
         {
-            "meal_type": r[0],
-            "description": r[1],
-            "ingredients": json.loads(r[2] or "[]"),
-            "allergen_warnings": json.loads(r[3] or "[]"),
-            "crohn_warnings": json.loads(r[4] or "[]"),
-            "calories": r[5] or 0,
-            "protein_g": r[6] or 0,
-            "carbs_g": r[7] or 0,
-            "fat_g": r[8] or 0,
-            "fiber_g": r[9] or 0,
-            "sugar_g": r[10] or 0,
-            "created_at": r[11],
+            "id": r[0],
+            "meal_type": r[1],
+            "description": r[2],
+            "ingredients": json.loads(r[3] or "[]"),
+            "allergen_warnings": json.loads(r[4] or "[]"),
+            "crohn_warnings": json.loads(r[5] or "[]"),
+            "calories": r[6] or 0,
+            "protein_g": r[7] or 0,
+            "carbs_g": r[8] or 0,
+            "fat_g": r[9] or 0,
+            "fiber_g": r[10] or 0,
+            "sugar_g": r[11] or 0,
+            "created_at": r[12],
         }
         for r in rows
     ]
+
+
+def delete_meal(conn, meal_id: int, user_id: int) -> Optional[dict]:
+    """Delete a meal by ID (must belong to user). Returns its data for confirmation, or None."""
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT meal_type, description, date, calories FROM meals WHERE id = %s AND user_id = %s",
+            (meal_id, user_id),
+        )
+        row = cur.fetchone()
+        if not row:
+            return None
+        data = {"meal_type": row[0], "description": row[1], "date": row[2], "calories": row[3] or 0}
+        cur.execute("DELETE FROM meals WHERE id = %s AND user_id = %s", (meal_id, user_id))
+    conn.commit()
+    return data
+
+
+def recalc_daily_log(conn, user_id: int, date: str) -> None:
+    """Recompute daily_logs totals from SUM of remaining meals. Delete row if no meals left."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """SELECT COALESCE(SUM(calories),0), COALESCE(SUM(protein_g),0),
+                      COALESCE(SUM(carbs_g),0), COALESCE(SUM(fat_g),0),
+                      COALESCE(SUM(fiber_g),0), COALESCE(SUM(sugar_g),0), COUNT(*)
+               FROM meals WHERE user_id = %s AND date = %s""",
+            (user_id, date),
+        )
+        row = cur.fetchone()
+        if not row or row[6] == 0:
+            cur.execute(
+                "DELETE FROM daily_logs WHERE user_id = %s AND date = %s",
+                (user_id, date),
+            )
+        else:
+            cur.execute(
+                """UPDATE daily_logs
+                   SET total_calories = %s, total_protein_g = %s, total_carbs_g = %s,
+                       total_fat_g = %s, total_fiber_g = %s, total_sugar_g = %s
+                   WHERE user_id = %s AND date = %s""",
+                (row[0], row[1], row[2], row[3], row[4], row[5], user_id, date),
+            )
+    conn.commit()
 
 
 # ---------- Daily logs ----------
@@ -336,7 +467,6 @@ def get_history(conn, user_id: int, days: int = 7) -> list[dict]:
 # ---------- Summaries / recommendations ----------
 
 def get_users_needing_summary(conn) -> list[tuple[int, str]]:
-    """Users with meals today and no summary yet. Returns [(user_id, date)]."""
     today = _today_str()
     with conn.cursor() as cur:
         cur.execute(

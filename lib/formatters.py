@@ -45,6 +45,168 @@ def _name_or_default(first_name: str | None) -> str:
     return first_name.strip() if (first_name and first_name.strip()) else "друже"
 
 
+_CONFIDENCE_ICON = {"high": "🔴", "medium": "🟠", "low": "🟡"}
+_SEVERITY_ICON = {"high": "🔴", "medium": "🟠", "low": "🟡"}
+
+_MEAL_TYPE_UA = {
+    "breakfast": "Сніданок",
+    "lunch": "Обід",
+    "dinner": "Вечеря",
+    "snack": "Перекус",
+}
+
+
+# --- Shared helpers ---
+
+def _format_ingredients(analysis: dict) -> list[str]:
+    """Build ingredient list lines from analysis.ingredients."""
+    ingredients = analysis.get("ingredients") or []
+    if not ingredients:
+        return []
+    lines = ["", "📋 <b>Інгредієнти:</b>"]
+    for ing in ingredients:
+        name = ing.get("name", "?")
+        grams = ing.get("estimated_grams")
+        if grams:
+            lines.append(f"  • {name} — ~{round(grams)}г")
+        else:
+            lines.append(f"  • {name}")
+    return lines
+
+
+def _format_warnings(analysis: dict) -> list[str]:
+    """Build allergen + Crohn warning lines."""
+    lines = []
+    allergen_flags = analysis.get("allergen_flags") or []
+    crohn_flags = analysis.get("crohn_flags") or []
+
+    if allergen_flags:
+        lines.append("")
+        lines.append("⚠️ <b>УВАГА, АЛЕРГЕН:</b>")
+        for a in allergen_flags:
+            icon = _CONFIDENCE_ICON.get((a.get("confidence") or "").lower(), "⚠️")
+            lines.append(
+                f"  {icon} {a.get('allergen', '?').capitalize()} "
+                f"(впевненість: {a.get('confidence', '?')}) — у складі: {a.get('ingredient', 'цієї страви')}"
+            )
+
+    if crohn_flags:
+        lines.append("")
+        lines.append("⚠️ <b>Примітка щодо Крона:</b>")
+        for c in crohn_flags:
+            icon = _SEVERITY_ICON.get((c.get("severity") or "").lower(), "🟡")
+            lines.append(
+                f"  {icon} {c.get('concern', 'питання')} "
+                f"({c.get('ingredient', '?')})"
+            )
+
+    return lines
+
+
+def _format_nutrition_line(nutrition: dict) -> str:
+    return (
+        f"🔥 {round(nutrition.get('calories', 0))} ккал | "
+        f"🥩 {round(nutrition.get('protein_g', 0))}г Б | "
+        f"🍚 {round(nutrition.get('carbs_g', 0))}г В | "
+        f"🧈 {round(nutrition.get('fat_g', 0))}г Ж"
+    )
+
+
+# --- Preview (before user accepts) ---
+
+def format_meal_preview(meal_type: str, analysis: dict) -> str:
+    """Preview message shown after AI analysis, before user taps Accept."""
+    dish = analysis.get("dish_name") or "Страва"
+    meal_ua = _MEAL_TYPE_UA.get(meal_type.lower(), meal_type.capitalize())
+    nutrition = analysis.get("nutrition", {}) or {}
+
+    lines = [
+        f"🔍 <b>Попередній перегляд: {dish}</b>",
+        f"🕐 {meal_ua}",
+    ]
+
+    lines.extend(_format_ingredients(analysis))
+    lines.append("")
+    lines.append(_format_nutrition_line(nutrition))
+    lines.extend(_format_warnings(analysis))
+
+    assessment = analysis.get("overall_assessment")
+    if assessment:
+        lines.append("")
+        lines.append(f"💬 {assessment}")
+
+    lines.append("")
+    lines.append("👇 <b>Підтвердити або виправити:</b>")
+    return "\n".join(lines)
+
+
+# --- Final confirmation (after Accept) ---
+
+def format_meal_logged(
+    meal_type: str,
+    analysis: dict,
+    today_log: dict,
+    first_name: str | None = None,
+) -> str:
+    nutrition = analysis.get("nutrition", {}) or {}
+    dish = analysis.get("dish_name") or "Страва"
+    date_display = _ua_date_long(datetime.utcnow())
+    meal_ua = _MEAL_TYPE_UA.get(meal_type.lower(), meal_type.capitalize())
+
+    lines = [
+        f"✅ <b>Записав: {dish}</b>",
+        f"🕐 {meal_ua} — {date_display}",
+    ]
+
+    lines.extend(_format_ingredients(analysis))
+    lines.append("")
+    lines.append(_format_nutrition_line(nutrition))
+    lines.extend(_format_warnings(analysis))
+
+    assessment = analysis.get("overall_assessment")
+    if assessment:
+        lines.append("")
+        lines.append(f"💬 {assessment}")
+
+    lines.append("")
+    lines.append(
+        f"📊 Разом за день: {round(today_log.get('calories', 0))} / {DAILY_CAL_TARGET} ккал"
+    )
+
+    if first_name:
+        lines.append(f"<i>Тримайся, {first_name}! 💪</i>")
+
+    return "\n".join(lines)
+
+
+# --- Meal management list ---
+
+def format_meals_list(meals: list[dict]) -> str:
+    """List today's meals with IDs for edit/delete."""
+    if not meals:
+        return (
+            "📋 <b>Сьогодні ще нічого не записано.</b>\n"
+            "Надішли фото або напиши, що їв/їла. 📸"
+        )
+
+    lines = ["📋 <b>Страви за сьогодні:</b>", ""]
+    for i, m in enumerate(meals, 1):
+        mt = _MEAL_TYPE_UA.get((m.get("meal_type") or "").lower(), "")
+        desc = m.get("description", "")[:50]
+        cal = round(m.get("calories", 0))
+        p = round(m.get("protein_g", 0))
+        c = round(m.get("carbs_g", 0))
+        f = round(m.get("fat_g", 0))
+        lines.append(f"{i}. <b>{mt}</b> — {desc}")
+        lines.append(f"   🔥 {cal} ккал | 🥩 {p}г Б | 🍚 {c}г В | 🧈 {f}г Ж")
+        lines.append("")
+
+    lines.append("👇 Обери дію під кожною стравою:")
+    return "\n".join(lines)
+
+
+# --- Today progress ---
+
 def welcome_message(first_name: str | None = None) -> str:
     name = _name_or_default(first_name)
     return (
@@ -57,8 +219,7 @@ def welcome_message(first_name: str | None = None) -> str:
         f"<b>Як записати їжу — два варіанти:</b>\n"
         f"📸 <b>Надішли фото</b> страви — і я розпізнаю.\n"
         f"📝 Або <b>напиши текстом</b>, що ти їв: наприклад, «курка 200г, рис 150г, броколі 100г».\n\n"
-        f"Жарт дня: я бачив твою каструлю ще в попередньому житті — не переживай, "
-        f"сьогодні вона смачніша. 😉\n\n"
+        f"Після аналізу ти зможеш <b>прийняти, перерахувати або ввести вручну</b>.\n\n"
         f"Тисни кнопку <b>«Меню»</b> зліва знизу — там усі команди."
     )
 
@@ -68,13 +229,14 @@ def help_message() -> str:
         "🤖 <b>Команди</b>\n"
         "/start — привітання та меню\n"
         "/today — прогрес за сьогодні\n"
+        "/meals — список страв за сьогодні (видалити / змінити)\n"
         "/history — останні 7 днів\n"
         "/history_detail YYYY-MM-DD — страви за певний день\n"
         "/suggest_meal — ідея страви, яка закриє день\n"
         "/help — показати цей список\n\n"
-        "📸 Надішли фото страви — я спитаю, який це прийом їжі, і зроблю аналіз.\n"
-        "📝 Або напиши текстом (наприклад: «курка 200г, рис 150г, броколі 100г») — "
-        "я теж порахую. Спойлер: рентген я не вмикаю, але око натреноване. 😎"
+        "📸 Надішли фото страви — я спитаю, який це прийом їжі, і покажу аналіз на перевірку.\n"
+        "📝 Або напиши текстом (наприклад: «курка 200г, рис 150г, броколі 100г»).\n"
+        "Після аналізу: ✅ Прийняти / 🔄 Перерахувати / ✏️ Ввести вручну."
     )
 
 
@@ -90,7 +252,6 @@ def format_today_progress(log: dict, first_name: str | None = None) -> str:
     remaining = max(0, DAILY_CAL_TARGET - cal)
     name = _name_or_default(first_name)
 
-    # A tiny, mood-aware quip
     if meals == 0:
         quip = "Поки порожньо, як у холодильнику студента перед стипендією. 😅"
     elif cal < DAILY_CAL_TARGET * 0.5:
@@ -121,81 +282,6 @@ def format_today_progress(log: dict, first_name: str | None = None) -> str:
         f"Залишилось: ~{round(remaining)} ккал\n\n"
         f"<i>{quip}</i>"
     )
-
-
-_CONFIDENCE_ICON = {"high": "🔴", "medium": "🟠", "low": "🟡"}
-_SEVERITY_ICON = {"high": "🔴", "medium": "🟠", "low": "🟡"}
-
-_MEAL_TYPE_UA = {
-    "breakfast": "Сніданок",
-    "lunch": "Обід",
-    "dinner": "Вечеря",
-    "snack": "Перекус",
-}
-
-
-def format_meal_logged(
-    meal_type: str,
-    analysis: dict,
-    today_log: dict,
-    first_name: str | None = None,
-) -> str:
-    nutrition = analysis.get("nutrition", {}) or {}
-    dish = analysis.get("dish_name") or "Страва"
-    date_display = _ua_date_long(datetime.utcnow())
-    meal_ua = _MEAL_TYPE_UA.get(meal_type.lower(), meal_type.capitalize())
-
-    allergen_flags = analysis.get("allergen_flags") or []
-    crohn_flags = analysis.get("crohn_flags") or []
-
-    lines = [
-        f"✅ <b>Записав: {dish}</b>",
-        f"🕐 {meal_ua} — {date_display}",
-        "",
-        (
-            f"🔥 {round(nutrition.get('calories', 0))} ккал | "
-            f"🥩 {round(nutrition.get('protein_g', 0))}г Б | "
-            f"🍚 {round(nutrition.get('carbs_g', 0))}г В | "
-            f"🧈 {round(nutrition.get('fat_g', 0))}г Ж"
-        ),
-    ]
-
-    if allergen_flags:
-        lines.append("")
-        lines.append("⚠️ <b>УВАГА, АЛЕРГЕН:</b>")
-        for a in allergen_flags:
-            icon = _CONFIDENCE_ICON.get((a.get("confidence") or "").lower(), "⚠️")
-            lines.append(
-                f"  {icon} {a.get('allergen', '?').capitalize()} "
-                f"(впевненість: {a.get('confidence', '?')}) — у складі: {a.get('ingredient', 'цієї страви')}"
-            )
-        lines.append("<i>Жарт на тему: помідор — овоч лише в салаті. В нас у списку — це злочинець. 🙃</i>")
-
-    if crohn_flags:
-        lines.append("")
-        lines.append("⚠️ <b>Примітка щодо Крона:</b>")
-        for c in crohn_flags:
-            icon = _SEVERITY_ICON.get((c.get("severity") or "").lower(), "🟡")
-            lines.append(
-                f"  {icon} {c.get('concern', 'питання')} "
-                f"({c.get('ingredient', '?')})"
-            )
-
-    assessment = analysis.get("overall_assessment")
-    if assessment:
-        lines.append("")
-        lines.append(f"💬 {assessment}")
-
-    lines.append("")
-    lines.append(
-        f"📊 Разом за день: {round(today_log.get('calories', 0))} / {DAILY_CAL_TARGET} ккал"
-    )
-
-    # Tiny personal nudge
-    if first_name:
-        lines.append(f"<i>Тримайся, {first_name}! 💪</i>")
-
-    return "\n".join(lines)
 
 
 def format_history(rows: list[dict]) -> str:
@@ -264,16 +350,27 @@ def format_day_detail(date: str, meals: list[dict]) -> str:
 # --- Short texts used by webhook.py ---
 
 PHOTO_PROMPT_MEAL_TYPE = "📸 Отримав! Що це за прийом їжі?"
+TEXT_PROMPT_MEAL_TYPE = "📝 Записав твій опис! Що це за прийом їжі?"
 ANALYZING_WAIT = "🔍 Аналізую страву, хвильку…"
+RECALC_WAIT = "🔄 Перераховую уважніше…"
 PHOTO_DOWNLOAD_FAILED = "Вибач, не вдалося завантажити фото. Спробуй ще раз. 📷"
 PHOTO_ANALYSIS_FAILED = (
     "Не зміг розпізнати страву. Спробуй зробити фото чіткішим — "
     "я ж не кіт, у темряві не бачу. 🐈‍⬛"
 )
+TEXT_ANALYSIS_FAILED = (
+    "Не зміг нормально розпарсити опис. Спробуй написати простіше — "
+    "наприклад: «курка 200г, рис 150г, броколі 100г». 🙂"
+)
 PENDING_EXPIRED = (
     "⏰ Минуло більше 10 хвилин, і я вже забув, що було на фото (у мене "
-    "серверна пам’ять — коротка). Надішли ще раз, будь ласка."
+    "серверна пам'ять — коротка). Надішли ще раз, будь ласка."
 )
+MANUAL_INPUT_PROMPT = "✏️ Напиши, що ти їв/їла (наприклад: курка 200г, рис 150г, броколі 100г):"
+MEAL_DELETED = "🗑 Видалено: <b>{dish}</b> ({cal} ккал). Денний підрахунок оновлено."
+MEAL_EDIT_PROMPT = "✏️ Напиши новий опис страви (замість «{dish}»):"
+MEAL_NOT_FOUND = "Не знайшов цю страву. Можливо, вже видалена."
+NO_MEALS_TO_MANAGE = "Сьогодні ще нічого не записано. Надішли фото або текст. 📸"
 UNKNOWN_COMMAND = "Не знаю такої команди. Глянь /help — там усе розписано. 🤓"
 SUGGEST_THINKING = "🧠 Думаю над ідеєю, яка закриє твій день…"
 SUGGEST_FAILED = "Ідея тимчасово застрягла в моделі. Спробуй за хвилину. 🤖💤"
