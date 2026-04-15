@@ -33,6 +33,7 @@ from lib.database import (
     get_conn,
     init_db,
     get_today_log,
+    get_log_for_date,
     get_meals_for_day,
     get_history,
 )
@@ -367,15 +368,72 @@ def _render_history_table(rows: list[dict]) -> str:
     return out
 
 
+def _render_meal_list(meals: list[dict], empty_msg: str) -> str:
+    """Render a filterable meal list. Each meal gets data-* attrs for client JS."""
+    if not meals:
+        return f"<p class='empty'>{empty_msg}</p>"
+    out = ""
+    for m in meals:
+        mt = m.get("meal_type", "") or ""
+        desc = (m.get("description") or "")
+        allergen_count = len(m.get("allergen_warnings") or [])
+        crohn_count = len(m.get("crohn_warnings") or [])
+        badges = ""
+        if allergen_count:
+            badges += f"<span class='badge badge-allergen' title='Алергени'>⚠️ {allergen_count}</span>"
+        if crohn_count:
+            badges += f"<span class='badge badge-crohn' title='Крон'>🩺 {crohn_count}</span>"
+        out += (
+            f"<div class='meal' data-type='{_esc(mt)}' "
+            f"data-desc='{_esc(desc.lower())}' "
+            f"data-has-allergen='{1 if allergen_count else 0}' "
+            f"data-has-crohn='{1 if crohn_count else 0}'>"
+            f"<div class='meal-head'>{_MEAL_TYPE_UA.get(mt, mt)}"
+            f" · <span class='kcal'>{round(m.get('calories',0))} ккал</span> {badges}</div>"
+            f"<div class='meal-desc'>{_esc(desc[:160])}</div>"
+            f"<div class='meal-macros'>Б {round(m.get('protein_g',0))}г · "
+            f"В {round(m.get('carbs_g',0))}г · "
+            f"Ж {round(m.get('fat_g',0))}г</div>"
+            f"</div>"
+        )
+    return out
+
+
+def _render_filter_bar(prefix: str, search_placeholder: str) -> str:
+    """Shared filter-bar HTML. JS in the page attaches to ids that use `prefix`."""
+    return f"""
+    <div class="filter-bar">
+      <input type="search" id="{prefix}Search" placeholder="🔍 {search_placeholder}">
+      <div class="chips" id="{prefix}TypeChips">
+        <button class="chip active" data-type="">Всі</button>
+        <button class="chip" data-type="breakfast">🍳 Сніданок</button>
+        <button class="chip" data-type="lunch">🥗 Обід</button>
+        <button class="chip" data-type="dinner">🍽️ Вечеря</button>
+        <button class="chip" data-type="snack">🍎 Перекус</button>
+      </div>
+      <div class="chips" id="{prefix}ToggleChips" style="margin-top: 6px;">
+        <button class="chip toggle" data-flag="allergen">⚠️ Тільки з алергенами</button>
+        <button class="chip toggle-crohn" data-flag="crohn">🩺 Тільки з Крон-прапорами</button>
+      </div>
+      <div class="filter-count" id="{prefix}FilterCount"></div>
+    </div>"""
+
+
 def _render_dashboard(user: dict) -> str:
+    from datetime import datetime, timedelta, timezone
+
     user_id = user["id"]
     first_name = user.get("first_name") or "друже"
+
+    yday_date = (datetime.now(timezone.utc) - timedelta(days=1)).strftime("%Y-%m-%d")
 
     conn = get_conn()
     try:
         init_db(conn)
         log = get_today_log(conn, user_id)
         today_meals = get_meals_for_day(conn, user_id, log["date"])
+        yday_log = get_log_for_date(conn, user_id, yday_date)
+        yday_meals = get_meals_for_day(conn, user_id, yday_date)
         week = get_history(conn, user_id, days=7)
         month = get_history(conn, user_id, days=30)
     finally:
@@ -389,40 +447,24 @@ def _render_dashboard(user: dict) -> str:
     c = log.get("carbs") or 0
     f = log.get("fat") or 0
     meal_count = log.get("meal_count") or 0
+
+    y_cal = yday_log.get("calories") or 0
+    y_p = yday_log.get("protein") or 0
+    y_c = yday_log.get("carbs") or 0
+    y_f = yday_log.get("fat") or 0
+    y_meal_count = yday_log.get("meal_count") or 0
+
     week_agg = _aggregate(week)
     month_agg = _aggregate(month)
 
-    # Today's meals list — each meal tagged with data attributes for client-side filtering
-    meals_rows = ""
-    if today_meals:
-        for m in today_meals:
-            mt = m.get("meal_type", "") or ""
-            desc = (m.get("description") or "")
-            allergen_count = len(m.get("allergen_warnings") or [])
-            crohn_count = len(m.get("crohn_warnings") or [])
-            badges = ""
-            if allergen_count:
-                badges += f"<span class='badge badge-allergen' title='Алергени'>⚠️ {allergen_count}</span>"
-            if crohn_count:
-                badges += f"<span class='badge badge-crohn' title='Крон'>🩺 {crohn_count}</span>"
-            meals_rows += (
-                f"<div class='meal' data-type='{_esc(mt)}' "
-                f"data-desc='{_esc(desc.lower())}' "
-                f"data-has-allergen='{1 if allergen_count else 0}' "
-                f"data-has-crohn='{1 if crohn_count else 0}'>"
-                f"<div class='meal-head'>{_MEAL_TYPE_UA.get(mt, mt)}"
-                f" · <span class='kcal'>{round(m.get('calories',0))} ккал</span> {badges}</div>"
-                f"<div class='meal-desc'>{_esc(desc[:160])}</div>"
-                f"<div class='meal-macros'>Б {round(m.get('protein_g',0))}г · "
-                f"В {round(m.get('carbs_g',0))}г · "
-                f"Ж {round(m.get('fat_g',0))}г</div>"
-                f"</div>"
-            )
-    else:
-        meals_rows = "<p class='empty'>Сьогодні ще нічого не записано.</p>"
+    today_meals_html = _render_meal_list(today_meals, "Сьогодні ще нічого не записано.")
+    yday_meals_html = _render_meal_list(yday_meals, "Вчора нічого не записано.")
 
     week_rows = _render_history_table(week)
     month_rows = _render_history_table(month)
+
+    day_filter_bar = _render_filter_bar("day", "Пошук (назва, тип…)")
+    yday_filter_bar = _render_filter_bar("yesterday", "Пошук (назва, тип…)")
 
     return f"""<!DOCTYPE html>
 <html lang="uk">
@@ -508,6 +550,7 @@ def _render_dashboard(user: dict) -> str:
 
 <div class="tabs" role="tablist">
   <button class="tab active" data-view="day" role="tab">День</button>
+  <button class="tab" data-view="yesterday" role="tab">Вчора</button>
   <button class="tab" data-view="week" role="tab">7 днів</button>
   <button class="tab" data-view="month" role="tab">30 днів</button>
 </div>
@@ -537,22 +580,38 @@ def _render_dashboard(user: dict) -> str:
 
   <div class="card">
     <h2>🍽️ Страви сьогодні</h2>
-    <div class="filter-bar">
-      <input type="search" id="mealSearch" placeholder="🔍 Пошук по опису…">
-      <div class="chips" id="mealTypeChips">
-        <button class="chip active" data-type="">Всі</button>
-        <button class="chip" data-type="breakfast">🍳 Сніданок</button>
-        <button class="chip" data-type="lunch">🥗 Обід</button>
-        <button class="chip" data-type="dinner">🍽️ Вечеря</button>
-        <button class="chip" data-type="snack">🍎 Перекус</button>
-      </div>
-      <div class="chips" style="margin-top: 6px;">
-        <button class="chip toggle" data-flag="allergen">⚠️ Тільки з алергенами</button>
-        <button class="chip toggle-crohn" data-flag="crohn">🩺 Тільки з Крон-прапорами</button>
-      </div>
-      <div class="filter-count" id="mealFilterCount"></div>
+    {day_filter_bar}
+    <div id="dayMealsList">{today_meals_html}</div>
+  </div>
+</div>
+
+<!-- ============ YESTERDAY VIEW ============ -->
+<div class="view" data-view="yesterday">
+  <div class="card">
+    <h2>📆 Вчора ({_esc(yday_date)})</h2>
+    <div class="macro">
+      <div class="macro-label"><span>Калорії</span><b>{round(y_cal)} / {DAILY_CAL_TARGET} ккал</b></div>
+      <div class="bar">{_bar(y_cal, DAILY_CAL_TARGET)}</div>
     </div>
-    <div id="mealsList">{meals_rows}</div>
+    <div class="macro">
+      <div class="macro-label"><span>Білки</span><b>{round(y_p)} / {MACRO_GRAM_TARGETS['protein']} г</b></div>
+      <div class="bar">{_bar(y_p, MACRO_GRAM_TARGETS['protein'])}</div>
+    </div>
+    <div class="macro">
+      <div class="macro-label"><span>Вуглеводи</span><b>{round(y_c)} / {MACRO_GRAM_TARGETS['carbs']} г</b></div>
+      <div class="bar">{_bar(y_c, MACRO_GRAM_TARGETS['carbs'])}</div>
+    </div>
+    <div class="macro">
+      <div class="macro-label"><span>Жири</span><b>{round(y_f)} / {MACRO_GRAM_TARGETS['fat']} г</b></div>
+      <div class="bar">{_bar(y_f, MACRO_GRAM_TARGETS['fat'])}</div>
+    </div>
+    <p class="sub" style="margin-top:10px">Страв записано: {y_meal_count}</p>
+  </div>
+
+  <div class="card">
+    <h2>🍽️ Страви вчора</h2>
+    {yday_filter_bar}
+    <div id="yesterdayMealsList">{yday_meals_html}</div>
   </div>
 </div>
 
@@ -615,14 +674,18 @@ def _render_dashboard(user: dict) -> str:
     }});
   }});
 
-  /* --- Day view meal filters --- */
-  (function() {{
+  /* --- Reusable meal filter init (day view, yesterday view) --- */
+  function initMealFilters(prefix) {{
     var activeType = '';
     var onlyAllergen = false;
     var onlyCrohn = false;
-    var searchEl = document.getElementById('mealSearch');
-    var countEl = document.getElementById('mealFilterCount');
-    var meals = Array.from(document.querySelectorAll('#mealsList .meal'));
+    var searchEl = document.getElementById(prefix + 'Search');
+    var countEl = document.getElementById(prefix + 'FilterCount');
+    var typeChipsEl = document.getElementById(prefix + 'TypeChips');
+    var toggleChipsEl = document.getElementById(prefix + 'ToggleChips');
+    var listEl = document.getElementById(prefix + 'MealsList');
+    if (!searchEl || !listEl) return;
+    var meals = Array.from(listEl.querySelectorAll('.meal'));
     if (meals.length === 0) return;
 
     function apply() {{
@@ -640,16 +703,16 @@ def _render_dashboard(user: dict) -> str:
       countEl.textContent = 'Показано ' + visible + ' / ' + meals.length;
     }}
 
-    document.querySelectorAll('#mealTypeChips .chip').forEach(function(chip) {{
+    typeChipsEl.querySelectorAll('.chip').forEach(function(chip) {{
       chip.addEventListener('click', function() {{
         activeType = chip.dataset.type;
-        document.querySelectorAll('#mealTypeChips .chip').forEach(function(c) {{
+        typeChipsEl.querySelectorAll('.chip').forEach(function(c) {{
           c.classList.toggle('active', c === chip);
         }});
         apply();
       }});
     }});
-    document.querySelectorAll('.chip.toggle, .chip.toggle-crohn').forEach(function(chip) {{
+    toggleChipsEl.querySelectorAll('.chip').forEach(function(chip) {{
       chip.addEventListener('click', function() {{
         var isActive = chip.classList.toggle('active');
         if (chip.dataset.flag === 'allergen') onlyAllergen = isActive;
@@ -659,6 +722,8 @@ def _render_dashboard(user: dict) -> str:
     }});
     searchEl.addEventListener('input', apply);
     apply();
-  }})();
+  }}
+  initMealFilters('day');
+  initMealFilters('yesterday');
 </script>
 </body></html>"""

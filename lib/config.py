@@ -31,7 +31,7 @@ USER_PROFILE = {
     "condition": "Crohn's disease",
     "goal": "muscle gain while managing Crohn's symptoms",
     "activity": "gym training (strength-focused)",
-    "daily_calorie_target": 2000,
+    "daily_calorie_target": 2200,
     "macro_targets": {
         "protein": 30,
         "carbs": 45,
@@ -156,7 +156,7 @@ RECALC_PROMPT = (
 )
 
 
-SUMMARY_PROMPT_TEMPLATE = """You are a nutrition coach for a 30-year-old woman with Crohn's disease who is strength training to build muscle. Her daily target is 2,000 calories with a 30/45/25 protein/carbs/fat split.
+SUMMARY_PROMPT_TEMPLATE = """You are a nutrition coach for a 30-year-old woman with Crohn's disease who is strength training to build muscle. Her daily target is 2,200 calories with a 30/45/25 protein/carbs/fat split.
 
 RESPOND ENTIRELY IN UKRAINIAN. Use a warm, supportive tone with 1–2 gentle, tasteful jokes sprinkled in. Use the section headers in Ukrainian: ✅ ЩО БУЛО ДОБРЕ, ⚠️ ЩО МОЖНА ПОКРАЩИТИ, 💡 ПОРАДИ НА ЗАВТРА, 🍽️ ІДЕЯ СТРАВИ НА ЗАВТРА.
 
@@ -166,10 +166,10 @@ Here is her food intake for today:
 {meals_json}
 
 Daily totals:
-- Calories: {total_cal} / 2000
-- Protein: {protein}g / 150g target
-- Carbs: {carbs}g / 225g target
-- Fat: {fat}g / 56g target
+- Calories: {total_cal} / 2200
+- Protein: {protein}g / 165g target
+- Carbs: {carbs}g / 248g target
+- Fat: {fat}g / 61g target
 - Fiber: {fiber}g
 - Sugar: {sugar}g
 
@@ -190,7 +190,7 @@ USER PROFILE:
 - Age 30, female
 - Condition: Crohn's disease (low residue / low insoluble fiber, easy-to-digest, avoid raw/spicy/caffeine/alcohol)
 - Goal: muscle gain via strength training
-- Daily target: 2000 kcal (30% protein / 45% carbs / 25% fat → ~150g P / 225g C / 56g F)
+- Daily target: 2200 kcal (30% protein / 45% carbs / 25% fat → ~165g P / 248g C / 61g F)
 
 STRICT ALLERGIES (must NEVER recommend or suggest these): tomatoes, gluten (wheat/barley/spelt/kamut/rye), eggs, mustard, emmental cheese, rapeseed/canola oil, cashews, pistachios. If the user mentions one of these as something they have — warn them gently.
 
@@ -215,7 +215,7 @@ RECIPE_PROMPT_TEMPLATE = """You are a meal-planning assistant for a 30-year-old 
 
 RESPOND ENTIRELY IN UKRAINIAN. Warm, friendly tone with a tiny joke if natural.
 
-Her daily targets: 2000 cal, 150g protein, 225g carbs, 56g fat.
+Her daily targets: 2200 cal, 165g protein, 248g carbs, 61g fat.
 
 STRICT allergies (must avoid ALL): tomatoes, gluten (wheat/barley/spelt/kamut/rye), eggs, mustard, emmental cheese, rapeseed/canola oil, cashews, pistachios.
 
