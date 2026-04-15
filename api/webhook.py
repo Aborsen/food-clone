@@ -43,6 +43,7 @@ from lib.telegram_helpers import (
     moderation_keyboard,
     meals_list_keyboard,
     main_menu_keyboard,
+    dashboard_inline_keyboard,
 )
 from lib.openai_vision import analyze_photo, analyze_text
 from lib.openai_nutrition import suggest_meal
@@ -81,6 +82,7 @@ from lib.formatters import (
     BTN_MEALS,
     BTN_HISTORY,
     BTN_SUGGEST,
+    BTN_DASHBOARD,
     MENU_BUTTON_LABELS,
 )
 
@@ -198,8 +200,16 @@ def process_update(update: dict) -> None:
             return
 
         # Reply-keyboard button taps arrive as plain text equal to the button's
-        # label. Map them to the corresponding slash command before the /command
-        # check so handling is unified.
+        # label. Dashboard is special — KeyboardButton.web_app doesn't provide
+        # initData, so we reply with an inline web_app button which does.
+        chat_id = message["chat"]["id"]
+        if text == BTN_DASHBOARD:
+            send_message(
+                chat_id,
+                "📱 Натисни кнопку нижче, щоб відкрити Dashboard:",
+                reply_markup=dashboard_inline_keyboard(),
+            )
+            return
         if text in MENU_BUTTON_LABELS:
             mapped = {
                 BTN_ASK: "/ask",

@@ -92,6 +92,21 @@ def main() -> int:
     if not cm_ua.get("ok") or not cm_default.get("ok"):
         return 3
 
+    # 3. Register the Mini App chat menu button (persistent; replaces '/' menu).
+    # This is the only launch mode that provides signed initData for user auth.
+    dashboard_url = f"https://{vercel_url}/api/dashboard"
+    mb = _post(token, "setChatMenuButton", {
+        "menu_button": {
+            "type": "web_app",
+            "text": "📱 Dashboard",
+            "web_app": {"url": dashboard_url},
+        }
+    })
+    print("→ setChatMenuButton (Dashboard Mini App)")
+    print(" ", mb)
+    if not mb.get("ok"):
+        return 4
+
     print("\n✅ Готово! У Telegram натисни кнопку «Меню» зліва знизу — команди відобразяться.")
     return 0
 

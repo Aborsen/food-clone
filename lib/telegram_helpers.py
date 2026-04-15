@@ -109,22 +109,54 @@ def meals_list_keyboard(meals: list[dict]) -> dict:
 def main_menu_keyboard() -> dict:
     """Persistent reply keyboard shown below the input field.
 
-    Each plain-text button sends its label as a message when tapped; webhook.py
-    intercepts the labels and routes them to the right command. The Dashboard
-    button uses `web_app` so it opens the miniapp URL inside Telegram.
+    All buttons are plain-text — tapping sends the label as a message and
+    webhook.py routes it. The Dashboard button intentionally does NOT use
+    KeyboardButton.web_app because that mode does not provide signed initData
+    (Telegram API limitation). Instead, tapping Dashboard makes the bot reply
+    with an inline keyboard whose web_app button gives full initData.
     """
     from lib.formatters import (
         BTN_ASK, BTN_TODAY, BTN_MEALS, BTN_HISTORY, BTN_SUGGEST, BTN_DASHBOARD,
     )
     return {
         "keyboard": [
-            [{"text": BTN_ASK}, {"text": BTN_DASHBOARD, "web_app": {"url": _dashboard_url()}}],
+            [{"text": BTN_ASK}, {"text": BTN_DASHBOARD}],
             [{"text": BTN_TODAY}, {"text": BTN_MEALS}],
             [{"text": BTN_HISTORY}, {"text": BTN_SUGGEST}],
         ],
         "resize_keyboard": True,
         "is_persistent": True,
     }
+
+
+def dashboard_inline_keyboard() -> dict:
+    """Inline keyboard with a single web_app button — this launch mode DOES
+    provide signed initData, unlike the KeyboardButton.web_app mode.
+    """
+    return {
+        "inline_keyboard": [[
+            {"text": "📱 Відкрити Dashboard", "web_app": {"url": _dashboard_url()}}
+        ]]
+    }
+
+
+def set_chat_menu_button() -> dict:
+    """Register a persistent Mini App button as the bot's chat menu button
+    (the icon left of the input area). This replaces the default `/` menu
+    for this bot and provides a launch that includes signed initData.
+    """
+    payload = {
+        "menu_button": {
+            "type": "web_app",
+            "text": "📱 Dashboard",
+            "web_app": {"url": _dashboard_url()},
+        }
+    }
+    try:
+        resp = httpx.post(f"{BASE_URL}/setChatMenuButton", json=payload, timeout=10)
+        return resp.json()
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
 
 
 def set_my_commands(commands: list[dict], language_code: str | None = None) -> dict:
