@@ -44,6 +44,7 @@ from lib.telegram_helpers import (
     meals_list_keyboard,
     main_menu_keyboard,
     dashboard_inline_keyboard,
+    set_chat_menu_button,
 )
 from lib.openai_vision import analyze_photo, analyze_text
 from lib.openai_nutrition import suggest_meal
@@ -462,6 +463,12 @@ def handle_command(conn, message: dict, text: str, first_name: str | None) -> No
     args = parts[1:]
 
     if cmd == "/start":
+        # Register the per-chat Mini App menu button on first interaction.
+        # Global defaults don't reliably take effect, so we do it per-chat.
+        try:
+            set_chat_menu_button(chat_id=chat_id)
+        except Exception as e:
+            print("set_chat_menu_button error:", e, flush=True)
         send_message(chat_id, welcome_message(first_name), reply_markup=main_menu_keyboard())
         return
 

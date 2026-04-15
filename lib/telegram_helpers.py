@@ -140,18 +140,21 @@ def dashboard_inline_keyboard() -> dict:
     }
 
 
-def set_chat_menu_button() -> dict:
+def set_chat_menu_button(chat_id: int | None = None) -> dict:
     """Register a persistent Mini App button as the bot's chat menu button
-    (the icon left of the input area). This replaces the default `/` menu
-    for this bot and provides a launch that includes signed initData.
+    (the icon left of the input area). When chat_id is given, applies to that
+    specific chat (the global-default setChatMenuButton call sometimes doesn't
+    take effect in Telegram, so we call this per-user on /start).
     """
-    payload = {
+    payload: dict = {
         "menu_button": {
             "type": "web_app",
             "text": "📱 Dashboard",
             "web_app": {"url": _dashboard_url()},
         }
     }
+    if chat_id is not None:
+        payload["chat_id"] = chat_id
     try:
         resp = httpx.post(f"{BASE_URL}/setChatMenuButton", json=payload, timeout=10)
         return resp.json()
