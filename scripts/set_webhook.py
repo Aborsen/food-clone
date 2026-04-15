@@ -23,6 +23,7 @@ except ImportError:
 # Native command menu shown under the blue "Menu" button inside Telegram.
 # Ukrainian descriptions (max 256 chars each, must be lowercase-friendly).
 COMMANDS_UA = [
+    {"command": "ask", "description": "💬 Запитати AI про їжу, рецепти, покупки"},
     {"command": "today", "description": "📊 Прогрес за сьогодні"},
     {"command": "meals", "description": "📋 Список страв (видалити / змінити)"},
     {"command": "history", "description": "📅 Останні 7 днів"},
@@ -32,6 +33,7 @@ COMMANDS_UA = [
 ]
 
 COMMANDS_EN = [
+    {"command": "ask", "description": "Ask AI about food, recipes, groceries"},
     {"command": "today", "description": "Today's progress"},
     {"command": "meals", "description": "Manage today's meals (delete / edit)"},
     {"command": "history", "description": "Last 7 days"},

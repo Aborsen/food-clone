@@ -31,6 +31,9 @@ from lib.database import (
     get_meals_for_day,
     delete_meal,
     recalc_daily_log,
+    get_chat_history,
+    append_chat_message,
+    cleanup_stale_chat,
 )
 from lib.telegram_helpers import (
     send_message,
@@ -42,6 +45,7 @@ from lib.telegram_helpers import (
 )
 from lib.openai_vision import analyze_photo, analyze_text
 from lib.openai_nutrition import suggest_meal
+from lib.openai_chat import ask_chat
 from lib.formatters import (
     welcome_message,
     help_message,
@@ -68,6 +72,9 @@ from lib.formatters import (
     SUGGEST_THINKING,
     SUGGEST_FAILED,
     HISTORY_USAGE,
+    ASK_PROMPT,
+    ASK_THINKING,
+    ASK_ERROR,
 )
 
 
@@ -146,6 +153,7 @@ def process_update(update: dict) -> None:
         init_db(conn)
         cleanup_stale_pending(conn, minutes=10)
         cleanup_stale_analyses(conn, minutes=10)
+        cleanup_stale_chat(conn, minutes=60)
 
         # Extract user_id from either callback_query or message
         if "callback_query" in update:
@@ -184,6 +192,19 @@ def process_update(update: dict) -> None:
 
         if text.startswith("/"):
             handle_command(conn, message, text, first_name)
+            return
+
+        # If this text is a reply to the bot's ASK_PROMPT force-reply message,
+        # treat it as a chat question (NOT a meal entry). Narrow check: only
+        # our specific prompt text, so other bot messages still behave normally.
+        reply_to = message.get("reply_to_message") or {}
+        if (
+            reply_to.get("from", {}).get("is_bot")
+            and reply_to.get("text") == ASK_PROMPT
+            and user_id
+        ):
+            chat_id = message["chat"]["id"]
+            handle_ask(conn, user_id, chat_id, text)
             return
 
         # Check if user is awaiting manual input for moderation
@@ -458,4 +479,39 @@ def handle_command(conn, message: dict, text: str, first_name: str | None) -> No
         send_message(chat_id, recipe)
         return
 
+    if cmd == "/ask":
+        # With args → answer immediately. No args → force_reply so the user's
+        # next message becomes the question.
+        question = " ".join(args).strip()
+        if question:
+            handle_ask(conn, user_id, chat_id, question)
+        else:
+            send_message(
+                chat_id,
+                ASK_PROMPT,
+                reply_markup={"force_reply": True, "selective": True},
+            )
+        return
+
     send_message(chat_id, UNKNOWN_COMMAND)
+
+
+# ---------- /ask chat mode ----------
+
+def handle_ask(conn, user_id: int, chat_id: int, question: str) -> None:
+    """Answer a user's chat question with multi-turn memory + today's intake context."""
+    send_message(chat_id, ASK_THINKING)
+    try:
+        today_log = get_today_log(conn, user_id)
+        today_meals = get_meals_for_day(conn, user_id, today_log["date"])
+        history = get_chat_history(conn, user_id, limit=10, minutes=60)
+        answer = ask_chat(question, history, today_log, today_meals)
+    except Exception as e:
+        print("ask_chat error:", traceback.format_exc(), flush=True)
+        send_message(chat_id, ASK_ERROR)
+        return
+
+    # Only persist after a successful answer — failed turns stay out of history
+    append_chat_message(conn, user_id, "user", question)
+    append_chat_message(conn, user_id, "assistant", answer)
+    send_message(chat_id, answer)

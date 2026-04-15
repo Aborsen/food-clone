@@ -104,6 +104,19 @@ def init_db(conn=None) -> None:
                 created_at TEXT NOT NULL
             )
         """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS chat_sessions (
+                id BIGSERIAL PRIMARY KEY,
+                user_id BIGINT NOT NULL,
+                role TEXT NOT NULL,
+                content TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            )
+        """)
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS idx_chat_sessions_user_ts "
+            "ON chat_sessions (user_id, created_at)"
+        )
     conn.commit()
     if close_after:
         try:
@@ -259,6 +272,44 @@ def cleanup_stale_analyses(conn, minutes: int = 10) -> None:
     cutoff = (datetime.now(timezone.utc) - timedelta(minutes=minutes)).isoformat()
     with conn.cursor() as cur:
         cur.execute("DELETE FROM pending_analyses WHERE created_at < %s", (cutoff,))
+    conn.commit()
+
+
+# ---------- Chat sessions (multi-turn /ask history) ----------
+
+def get_chat_history(conn, user_id: int, limit: int = 10, minutes: int = 60) -> list[dict]:
+    """Return the user's recent chat messages (within `minutes`), oldest first.
+
+    Shape matches what OpenAI expects: [{"role": "user"|"assistant", "content": "..."}].
+    Rows older than `minutes` are treated as a new conversation.
+    """
+    cutoff = (datetime.now(timezone.utc) - timedelta(minutes=minutes)).isoformat()
+    with conn.cursor() as cur:
+        cur.execute(
+            """SELECT role, content FROM chat_sessions
+               WHERE user_id = %s AND created_at >= %s
+               ORDER BY id DESC LIMIT %s""",
+            (user_id, cutoff, limit),
+        )
+        rows = cur.fetchall()
+    # Fetched newest-first for the LIMIT; flip to chronological order for the LLM.
+    return [{"role": r[0], "content": r[1]} for r in reversed(rows)]
+
+
+def append_chat_message(conn, user_id: int, role: str, content: str) -> None:
+    with conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO chat_sessions (user_id, role, content, created_at) "
+            "VALUES (%s, %s, %s, %s)",
+            (user_id, role, content, _now_iso()),
+        )
+    conn.commit()
+
+
+def cleanup_stale_chat(conn, minutes: int = 60) -> None:
+    cutoff = (datetime.now(timezone.utc) - timedelta(minutes=minutes)).isoformat()
+    with conn.cursor() as cur:
+        cur.execute("DELETE FROM chat_sessions WHERE created_at < %s", (cutoff,))
     conn.commit()
 
 
