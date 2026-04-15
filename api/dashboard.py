@@ -26,6 +26,7 @@ if _ROOT not in sys.path:
 from lib.config import (
     ALLOWED_USER_IDS,
     DAILY_CAL_TARGET,
+    LOCAL_TZ,
     MACRO_GRAM_TARGETS,
     TELEGRAM_BOT_TOKEN,
 )
@@ -421,12 +422,12 @@ def _render_filter_bar(prefix: str, search_placeholder: str) -> str:
 
 
 def _render_dashboard(user: dict) -> str:
-    from datetime import datetime, timedelta, timezone
+    from datetime import datetime, timedelta
 
     user_id = user["id"]
     first_name = user.get("first_name") or "друже"
 
-    yday_date = (datetime.now(timezone.utc) - timedelta(days=1)).strftime("%Y-%m-%d")
+    yday_date = (datetime.now(LOCAL_TZ) - timedelta(days=1)).strftime("%Y-%m-%d")
 
     conn = get_conn()
     try:

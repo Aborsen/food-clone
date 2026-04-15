@@ -486,8 +486,9 @@ def handle_command(conn, message: dict, text: str, first_name: str | None) -> No
         return
 
     if cmd == "/yesterday":
-        from datetime import datetime, timedelta, timezone
-        y = (datetime.now(timezone.utc) - timedelta(days=1)).strftime("%Y-%m-%d")
+        from datetime import datetime, timedelta
+        from lib.config import LOCAL_TZ
+        y = (datetime.now(LOCAL_TZ) - timedelta(days=1)).strftime("%Y-%m-%d")
         log = get_log_for_date(conn, user_id, y)
         meals = get_meals_for_day(conn, user_id, y)
         send_message(chat_id, format_yesterday(log, meals, first_name), reply_markup=main_menu_keyboard())

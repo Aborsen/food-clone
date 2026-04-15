@@ -1,11 +1,17 @@
 """Configuration: user profile, env vars, and prompt templates."""
 import os
+from zoneinfo import ZoneInfo
 
 try:
     from dotenv import load_dotenv
     load_dotenv()
 except ImportError:
     pass
+
+
+# All "today / yesterday / date shown to user" logic uses this timezone.
+# DST (EET↔EEST) is handled automatically by zoneinfo.
+LOCAL_TZ = ZoneInfo("Europe/Kyiv")
 
 
 def _env(name: str, default: str = "") -> str:

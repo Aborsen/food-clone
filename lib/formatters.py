@@ -2,7 +2,7 @@
 import random
 from datetime import datetime
 
-from lib.config import DAILY_CAL_TARGET, MACRO_GRAM_TARGETS
+from lib.config import DAILY_CAL_TARGET, LOCAL_TZ, MACRO_GRAM_TARGETS
 
 
 def _bar(used: float, target: float, width: int = 10) -> str:
@@ -157,7 +157,7 @@ def format_meal_logged(
 ) -> str:
     nutrition = analysis.get("nutrition", {}) or {}
     dish = analysis.get("dish_name") or "Страва"
-    date_display = _ua_date_long(datetime.utcnow())
+    date_display = _ua_date_long(datetime.now(LOCAL_TZ))
     meal_ua = _MEAL_TYPE_UA.get(meal_type.lower(), meal_type.capitalize())
 
     lines = [
@@ -254,7 +254,7 @@ def help_message() -> str:
 
 
 def format_today_progress(log: dict, first_name: str | None = None) -> str:
-    date_display = _ua_date_long(datetime.utcnow())
+    date_display = _ua_date_long(datetime.now(LOCAL_TZ))
     cal = log.get("calories", 0)
     p = log.get("protein", 0)
     c = log.get("carbs", 0)

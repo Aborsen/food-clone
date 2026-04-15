@@ -5,7 +5,7 @@ from typing import Optional
 
 import psycopg
 
-from lib.config import DATABASE_URL
+from lib.config import DATABASE_URL, LOCAL_TZ
 
 
 def get_conn():
@@ -14,11 +14,14 @@ def get_conn():
 
 
 def _now_iso() -> str:
+    # Timestamps stay in UTC — absolute time, unambiguous in the DB.
     return datetime.now(timezone.utc).isoformat()
 
 
 def _today_str() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    # "Today" is a calendar concept — compute from Kyiv local so meals logged
+    # between midnight Kyiv and midnight UTC don't fall on the wrong day.
+    return datetime.now(LOCAL_TZ).strftime("%Y-%m-%d")
 
 
 def init_db(conn=None) -> None:

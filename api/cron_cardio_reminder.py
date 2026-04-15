@@ -20,7 +20,7 @@ _ROOT = os.path.dirname(_THIS)
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
-from lib.config import ALLOWED_USER_IDS, CRON_SECRET
+from lib.config import ALLOWED_USER_IDS, CRON_SECRET, LOCAL_TZ
 from lib.telegram_helpers import send_message
 
 
@@ -61,11 +61,7 @@ def _authorized(headers) -> bool:
 
 def _pick_reminder() -> str:
     """Pick a reminder text appropriate for today's weekday (Kyiv local)."""
-    now_utc = datetime.now(timezone.utc)
-    # Kyiv is UTC+2 (winter) or UTC+3 (summer). April is EEST (UTC+3).
-    # Cron fires at 04:30 UTC = 07:30 Kyiv, so the local weekday matches
-    # the UTC weekday for this cron time.
-    weekday = now_utc.weekday()  # 0=Mon … 6=Sun
+    weekday = datetime.now(LOCAL_TZ).weekday()  # 0=Mon … 6=Sun, Kyiv local
     day_name, context = _WEEKDAY_CONTEXT.get(weekday, ("Сьогодні", "rest_middle"))
 
     if context in ("rest_middle", "rest_friday", "lift_tomorrow"):
