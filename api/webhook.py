@@ -53,6 +53,7 @@ from lib.telegram_helpers import (
     edit_message_text,
     edit_message_reply_markup,
     get_file_bytes,
+    send_chat_action,
     meal_type_keyboard,
     moderation_keyboard,
     meals_list_keyboard,
@@ -66,6 +67,7 @@ from lib.telegram_helpers import (
     water_goal_keyboard,
 )
 from lib.openai_vision import analyze_photo, analyze_text
+from lib.openai_voice import transcribe_voice
 from lib.openai_nutrition import suggest_meal
 from lib.openai_chat import ask_chat
 from lib.formatters import (
@@ -218,6 +220,10 @@ def process_update(update: dict) -> None:
         if user_id:
             upsert_user(conn, user_id, username)
 
+        if message.get("voice") or message.get("audio"):
+            handle_voice(conn, message)
+            return
+
         if message.get("photo"):
             handle_photo(conn, message)
             return
@@ -303,6 +309,52 @@ def handle_text_entry(conn, message: dict, text: str) -> None:
     chat_id = message["chat"]["id"]
     user_id = message["from"]["id"]
     save_pending_text(conn, user_id, text)
+    send_message(chat_id, TEXT_PROMPT_MEAL_TYPE, reply_markup=meal_type_keyboard())
+
+
+# ---------- Voice entry ----------
+
+VOICE_TOO_LONG = "🎙 Задовге повідомлення — будь ласка, до 60 с."
+VOICE_EMPTY = "🤔 Не розпізнав їжу. Спробуй ще раз або напиши текстом."
+VOICE_ERROR = "😵 Не вийшло розпізнати голос. Спробуй ще раз або напиши текстом."
+VOICE_MAX_BYTES = 2 * 1024 * 1024  # ~60–90s of OGG/Opus
+
+
+def handle_voice(conn, message: dict) -> None:
+    import html as _html
+    chat_id = message["chat"]["id"]
+    user_id = message["from"]["id"]
+    voice = message.get("voice") or message.get("audio") or {}
+    file_id = voice.get("file_id")
+    file_size = voice.get("file_size") or 0
+    if not file_id:
+        return
+    if file_size > VOICE_MAX_BYTES:
+        send_message(chat_id, VOICE_TOO_LONG)
+        return
+
+    send_chat_action(chat_id, "typing")
+    try:
+        audio_bytes = get_file_bytes(file_id)
+    except Exception as e:
+        print("voice getFile error:", e, flush=True)
+        send_message(chat_id, VOICE_ERROR)
+        return
+
+    try:
+        transcript = transcribe_voice(audio_bytes)
+    except Exception as e:
+        print("whisper error:", e, flush=True)
+        send_message(chat_id, VOICE_ERROR)
+        return
+
+    if not transcript or len(transcript) < 3:
+        send_message(chat_id, VOICE_EMPTY)
+        return
+
+    safe = _html.escape(transcript, quote=False)
+    send_message(chat_id, f"🎙 Почув: «{safe}»")
+    save_pending_text(conn, user_id, transcript)
     send_message(chat_id, TEXT_PROMPT_MEAL_TYPE, reply_markup=meal_type_keyboard())
 
 

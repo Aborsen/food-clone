@@ -72,6 +72,18 @@ def edit_message_reply_markup(chat_id: int, message_id: int, reply_markup: dict)
         return {"ok": False, "error": str(e)}
 
 
+def send_chat_action(chat_id: int, action: str = "typing") -> dict:
+    try:
+        resp = httpx.post(
+            f"{BASE_URL}/sendChatAction",
+            json={"chat_id": chat_id, "action": action},
+            timeout=10,
+        )
+        return resp.json()
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
 def get_file_bytes(file_id: str) -> bytes:
     """Fetch the binary contents of a Telegram-hosted file."""
     meta = httpx.get(f"{BASE_URL}/getFile", params={"file_id": file_id}, timeout=10).json()
