@@ -1016,14 +1016,11 @@ def _render_dashboard(user: dict) -> str:
     el.addEventListener('click', function() {{ doAction(el.dataset.action, el); }});
   }});
   function closeApp() {{
-    // If we have initData, we were launched from a proper Telegram button
-    // inside the bot chat — close() alone returns the user there, and
-    // skipping openTelegramLink avoids the phantom haptic tap it produces
-    // when it tries to navigate to the chat you're already in.
-    // If initData is empty (token-bypass GET from a direct link), we're
-    // outside the bot chat and need openTelegramLink to navigate.
-    var hasInitData = !!(TG && TG.initData);
-    if (!hasInitData && BOT_URL && TG && typeof TG.openTelegramLink === 'function') {{
+    // Always navigate (no-op when already in bot chat) and always close —
+    // tried gating the navigate on launch context and it broke the menu
+    // button path. The slight haptic tap on menu-button launches is the
+    // trade-off for this pattern working universally.
+    if (BOT_URL && TG && typeof TG.openTelegramLink === 'function') {{
       try {{ TG.openTelegramLink(BOT_URL); }} catch(e) {{}}
     }}
     if (TG && typeof TG.close === 'function') {{
