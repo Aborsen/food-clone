@@ -1017,10 +1017,24 @@ def _render_dashboard(user: dict) -> str:
   }});
   function closeApp() {{
     var tg = window.Telegram && window.Telegram.WebApp;
-    if (BOT_URL && tg && typeof tg.openTelegramLink === 'function') {{
-      try {{ tg.openTelegramLink(BOT_URL); return; }} catch(e) {{}}
+    var ud = (tg && tg.initDataUnsafe) || {{}};
+    // 'sender' = launched via attachment/menu button from the user's private
+    // chat with THIS bot. close() drops the overlay and returns them there;
+    // openTelegramLink would be a no-op because the link points to the chat
+    // they're already in.
+    var inBotChat = ud.chat_type === 'sender';
+    if (inBotChat) {{
+      if (tg && typeof tg.close === 'function') {{
+        try {{ tg.close(); return; }} catch(e) {{}}
+      }}
+    }} else {{
+      if (BOT_URL && tg && typeof tg.openTelegramLink === 'function') {{
+        try {{ tg.openTelegramLink(BOT_URL); return; }} catch(e) {{}}
+      }}
+      if (tg && typeof tg.close === 'function') {{
+        try {{ tg.close(); return; }} catch(e) {{}}
+      }}
     }}
-    if (tg && typeof tg.close === 'function') {{ try {{ tg.close(); return; }} catch(e) {{}} }}
     try {{ window.close(); }} catch(e) {{}}
     try {{ history.back(); }} catch(e) {{}}
   }}
