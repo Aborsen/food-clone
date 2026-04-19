@@ -562,6 +562,19 @@ def _summary_card(cal, p, c, f) -> str:
     return f'<p class="sum-head">{headline}</p>{bullets_html}'
 
 
+def _macro_row(label: str, value: float, target: float, unit: str) -> str:
+    pct = 0.0
+    if target and target > 0:
+        pct = max(0.0, min(100.0, (value / target) * 100))
+    return (
+        f'<div class="macro">'
+        f'<span class="macro-name">{_esc(label)}</span>'
+        f'<div class="macro-fill-wrap"><div class="macro-fill" style="width:{pct:.1f}%"></div></div>'
+        f'<b class="macro-value">{round(value)} / {round(target)} {_esc(unit)}</b>'
+        f'</div>'
+    )
+
+
 def _meal_type_by_hour() -> str:
     from datetime import datetime
     h = datetime.now(LOCAL_TZ).hour
@@ -747,7 +760,14 @@ def _render_dashboard(user: dict) -> str:
   .card {{ background: #16213e; border-radius: 12px; padding: 14px 16px; margin-bottom: 14px; }}
   .card h2 {{ margin: 0 0 10px; font-size: 1.05em; color: #e0e0e0; }}
 
-  .macro {{ margin: 8px 0; }}
+  .macro {{ display: flex; align-items: center; gap: 10px; margin: 10px 0; }}
+  .macro-name {{ flex: 0 0 auto; width: 78px; color: #bdbdd0; font-size: 0.88em; }}
+  .macro-fill-wrap {{ flex: 1 1 auto; height: 8px; background: #0f0f1a;
+                      border-radius: 4px; overflow: hidden; min-width: 40px; }}
+  .macro-fill {{ height: 100%; background: #e94560; border-radius: 4px; }}
+  .macro-value {{ flex: 0 0 auto; color: #e0e0e0; font-size: 0.84em;
+                  font-weight: 500; white-space: nowrap; }}
+  /* Legacy — kept for any call sites still using the old label+bar split */
   .macro-label {{ display: flex; justify-content: space-between; font-size: 0.9em;
                  color: #bdbdd0; margin-bottom: 3px; }}
   .macro-label b {{ color: #e0e0e0; }}
@@ -866,22 +886,10 @@ def _render_dashboard(user: dict) -> str:
 
   <details class="card details-card">
     <summary><span class="chev">▸</span> 📋 Деталі дня</summary>
-    <div class="macro">
-      <div class="macro-label"><span>Калорії</span><b>{round(cal)} / {DAILY_CAL_TARGET} ккал</b></div>
-      <div class="bar">{_bar(cal, DAILY_CAL_TARGET)}</div>
-    </div>
-    <div class="macro">
-      <div class="macro-label"><span>Білки</span><b>{round(p)} / {MACRO_GRAM_TARGETS['protein']} г</b></div>
-      <div class="bar">{_bar(p, MACRO_GRAM_TARGETS['protein'])}</div>
-    </div>
-    <div class="macro">
-      <div class="macro-label"><span>Вуглеводи</span><b>{round(c)} / {MACRO_GRAM_TARGETS['carbs']} г</b></div>
-      <div class="bar">{_bar(c, MACRO_GRAM_TARGETS['carbs'])}</div>
-    </div>
-    <div class="macro">
-      <div class="macro-label"><span>Жири</span><b>{round(f)} / {MACRO_GRAM_TARGETS['fat']} г</b></div>
-      <div class="bar">{_bar(f, MACRO_GRAM_TARGETS['fat'])}</div>
-    </div>
+    {_macro_row("Калорії", cal, DAILY_CAL_TARGET, "ккал")}
+    {_macro_row("Білки", p, MACRO_GRAM_TARGETS['protein'], "г")}
+    {_macro_row("Вуглеводи", c, MACRO_GRAM_TARGETS['carbs'], "г")}
+    {_macro_row("Жири", f, MACRO_GRAM_TARGETS['fat'], "г")}
     <p class="sub" style="margin-top:10px">Страв записано: {meal_count}</p>
   </details>
 
@@ -906,22 +914,10 @@ def _render_dashboard(user: dict) -> str:
 <div class="view" data-view="yesterday">
   <div class="card">
     <h2>📆 Вчора ({_esc(yday_date)})</h2>
-    <div class="macro">
-      <div class="macro-label"><span>Калорії</span><b>{round(y_cal)} / {DAILY_CAL_TARGET} ккал</b></div>
-      <div class="bar">{_bar(y_cal, DAILY_CAL_TARGET)}</div>
-    </div>
-    <div class="macro">
-      <div class="macro-label"><span>Білки</span><b>{round(y_p)} / {MACRO_GRAM_TARGETS['protein']} г</b></div>
-      <div class="bar">{_bar(y_p, MACRO_GRAM_TARGETS['protein'])}</div>
-    </div>
-    <div class="macro">
-      <div class="macro-label"><span>Вуглеводи</span><b>{round(y_c)} / {MACRO_GRAM_TARGETS['carbs']} г</b></div>
-      <div class="bar">{_bar(y_c, MACRO_GRAM_TARGETS['carbs'])}</div>
-    </div>
-    <div class="macro">
-      <div class="macro-label"><span>Жири</span><b>{round(y_f)} / {MACRO_GRAM_TARGETS['fat']} г</b></div>
-      <div class="bar">{_bar(y_f, MACRO_GRAM_TARGETS['fat'])}</div>
-    </div>
+    {_macro_row("Калорії", y_cal, DAILY_CAL_TARGET, "ккал")}
+    {_macro_row("Білки", y_p, MACRO_GRAM_TARGETS['protein'], "г")}
+    {_macro_row("Вуглеводи", y_c, MACRO_GRAM_TARGETS['carbs'], "г")}
+    {_macro_row("Жири", y_f, MACRO_GRAM_TARGETS['fat'], "г")}
     <p class="sub" style="margin-top:10px">Страв записано: {y_meal_count}</p>
   </div>
 
