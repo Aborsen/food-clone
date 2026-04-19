@@ -30,6 +30,7 @@ from lib.config import (
     LOCAL_TZ,
     MACRO_GRAM_TARGETS,
     TELEGRAM_BOT_TOKEN,
+    USER_PROFILE,
 )
 from lib.database import (
     get_conn,
@@ -41,6 +42,10 @@ from lib.database import (
     get_water_today,
     get_water_target,
     get_water_for_date,
+    get_recent_meals,
+    add_water,
+    remove_last_water_today,
+    clone_meal_for_today,
 )
 
 
@@ -184,14 +189,36 @@ class handler(BaseHTTPRequestHandler):
             raw = self.rfile.read(length).decode("utf-8")
             form = urllib.parse.parse_qs(raw)
             init_data = (form.get("initData") or [""])[0]
+            action = (form.get("action") or [""])[0]
         except Exception:
             self._send_html(400, "<h1>Bad request</h1>")
             return
 
         user = _verify_init_data(init_data)
         if user is None:
-            self._send_html(401, _unauthorized_html())
-            return
+            # Token-bypass fallback: allows action POSTs from pages that were
+            # served via the ?t=<DASHBOARD_TOKEN> GET path (chat menu button).
+            parsed = urllib.parse.urlparse(self.path)
+            q = urllib.parse.parse_qs(parsed.query)
+            token = (q.get("t") or [""])[0]
+            if DASHBOARD_TOKEN and token and hmac.compare_digest(token, DASHBOARD_TOKEN):
+                user_id = next(iter(ALLOWED_USER_IDS))
+                user = {"id": user_id, "first_name": "Raudar"}
+            else:
+                self._send_html(401, _unauthorized_html())
+                return
+
+        if action:
+            conn = get_conn()
+            try:
+                _dispatch_action(conn, user["id"], action)
+            except Exception:
+                print("dashboard action error:", traceback.format_exc(), flush=True)
+            finally:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
 
         try:
             body = _render_dashboard(user)
@@ -504,6 +531,104 @@ def _summary_card(cal, p, c, f) -> str:
     return f'<p class="sum-head">{headline}</p>{bullets_html}'
 
 
+def _meal_type_by_hour() -> str:
+    from datetime import datetime
+    h = datetime.now(LOCAL_TZ).hour
+    if 6 <= h < 11:
+        return "breakfast"
+    if 11 <= h < 16:
+        return "lunch"
+    if 16 <= h < 21:
+        return "dinner"
+    return "snack"
+
+
+def _dispatch_action(conn, user_id: int, action: str) -> None:
+    if action == "water_add:250":
+        add_water(conn, user_id, 250)
+    elif action == "water_undo":
+        remove_last_water_today(conn, user_id)
+    elif action == "relog_last":
+        recent = get_recent_meals(conn, user_id, limit=1)
+        if recent:
+            clone_meal_for_today(conn, recent[0]["id"], user_id, _meal_type_by_hour())
+
+
+def _hero_card(cal: float, p: float, water_ml: int, hours_left: int, date_str: str) -> str:
+    target = DAILY_CAL_TARGET or 1
+    r = cal / target if target else 0
+    if cal == 0:
+        chip_cls, chip_emoji, chip_text = "info", "⚪", "ще нічого"
+    elif r > 1.15:
+        chip_cls, chip_emoji, chip_text = "over", "🔴", "перебір"
+    elif r > 1.05:
+        chip_cls, chip_emoji, chip_text = "warn", "🟡", "майже впритик"
+    elif r >= 0.85:
+        chip_cls, chip_emoji, chip_text = "ok", "🟢", "на місці"
+    elif hours_left < 4:
+        chip_cls, chip_emoji, chip_text = "warn", "🟡", "дожени"
+    else:
+        chip_cls, chip_emoji, chip_text = "info", "🔵", "простір є"
+
+    remaining = target - cal
+    if cal > target:
+        big_html = f'<div class="big over">−{round(abs(remaining)):,}</div><div class="unit">ккал перебір</div>'
+    else:
+        big_html = f'<div class="big">{round(max(0, remaining)):,}</div><div class="unit">ккал лишилось</div>'
+
+    time_hint = f"До кінця дня ~{hours_left} год" if hours_left > 0 else "День скоро зміниться"
+    p_target = MACRO_GRAM_TARGETS["protein"]
+    water_l = water_ml / 1000
+
+    return (
+        f'<div class="hero">'
+        f'<div class="hero-head">📊 {_esc(date_str)}</div>'
+        f'{big_html}'
+        f'<div><span class="chip {chip_cls}">{chip_emoji} {chip_text}</span></div>'
+        f'<div class="sub2">{time_hint}</div>'
+        f'<div class="pills">Білки: {round(p)}/{p_target} г · Вода: {water_l:.1f} л</div>'
+        f'</div>'
+    )
+
+
+def _goal_header_html() -> str:
+    goal = (USER_PROFILE.get("goal") or "").strip()
+    if not goal:
+        return ""
+    if len(goal) > 60:
+        goal = goal[:59] + "…"
+    return f'<p class="goal">🎯 {_esc(goal)}</p>'
+
+
+def _adherence_line(week_rows: list[dict]) -> str:
+    target = DAILY_CAL_TARGET or 1
+    days_logged = sum(1 for r in week_rows if (r.get("calories") or 0) > 0)
+    if days_logged == 0:
+        return "Твій прогрес · почнемо сьогодні"
+    days_in_range = sum(
+        1 for r in week_rows
+        if (r.get("calories") or 0) > 0
+        and 0.85 <= (r["calories"] / target) <= 1.05
+    )
+    return f"За 7 днів: {days_in_range}/{days_logged} днів у цілі"
+
+
+def _quick_actions_html(has_recent_meal: bool, water_today_ml: int) -> str:
+    relog_attr = '' if has_recent_meal else ' disabled'
+    relog_class = 'qa-btn' if has_recent_meal else 'qa-btn qa-btn-ghost'
+    undo_attr = '' if water_today_ml > 0 else ' disabled'
+    return (
+        f'<div class="quick-actions">'
+        f'  <button type="button" class="qa-btn" data-action="water_add:250">💧 +250 мл</button>'
+        f'  <button type="button" class="{relog_class}" data-action="relog_last"{relog_attr}>🔁 Остання</button>'
+        f'  <button type="button" class="qa-btn qa-btn-ghost" data-close>💬 До бота</button>'
+        f'</div>'
+        f'<div class="quick-actions-2">'
+        f'  <button type="button" class="qa-btn qa-btn-ghost" data-action="water_undo"{undo_attr}>↩️ Скасувати воду</button>'
+        f'</div>'
+    )
+
+
 def _render_dashboard(user: dict) -> str:
     from datetime import datetime, timedelta
 
@@ -524,6 +649,7 @@ def _render_dashboard(user: dict) -> str:
         water_today = get_water_today(conn, user_id)
         water_target = get_water_target(conn, user_id)
         water_yday = get_water_for_date(conn, user_id, yday_date)
+        recent_last = get_recent_meals(conn, user_id, limit=1)
     finally:
         try:
             conn.close()
@@ -558,6 +684,14 @@ def _render_dashboard(user: dict) -> str:
     yday_summary_html = _summary_card(y_cal, y_p, y_c, y_f)
     water_html = _water_card(water_today, water_target)
     yday_water_html = _water_card(water_yday, water_target)
+
+    now_kyiv = datetime.now(LOCAL_TZ)
+    hours_left = max(0, 24 - now_kyiv.hour)
+    hero_html = _hero_card(cal, p, water_today, hours_left, log.get("date", ""))
+    goal_html = _goal_header_html()
+    adherence_line = _adherence_line(week)
+    quick_actions_html = _quick_actions_html(bool(recent_last), water_today)
+    _js_token = json.dumps(DASHBOARD_TOKEN or "")
 
     return f"""<!DOCTYPE html>
 <html lang="uk">
@@ -607,6 +741,41 @@ def _render_dashboard(user: dict) -> str:
 
   .sum-head {{ margin: 0 0 10px; font-size: 0.95em; color: #e0e0e0; line-height: 1.5; }}
   .sum-line {{ margin: 6px 0; font-size: 0.9em; color: #bdbdd0; line-height: 1.5; }}
+
+  .hero {{ background: linear-gradient(135deg, #1e2e52 0%, #16213e 100%);
+           border-radius: 14px; padding: 22px 18px; margin-bottom: 12px; text-align: center; }}
+  .hero-head {{ color: #888; font-size: 0.85em; margin-bottom: 10px; }}
+  .hero .big {{ font-size: 2.8em; font-weight: 700; color: #e0e0e0; line-height: 1; }}
+  .hero .big.over {{ color: #e94560; }}
+  .hero .unit {{ color: #888; font-size: 0.9em; margin-top: 4px; margin-bottom: 10px; }}
+  .chip {{ display: inline-block; padding: 4px 10px; border-radius: 999px;
+           font-size: 0.82em; font-weight: 600; }}
+  .chip.ok    {{ background: #133a2b; color: #4caf82; }}
+  .chip.warn  {{ background: #4a3a1e; color: #ffbb5b; }}
+  .chip.over  {{ background: #4a1e2a; color: #ff6b7f; }}
+  .chip.info  {{ background: #1e3a4a; color: #6bb5ff; }}
+  .hero .sub2 {{ color: #bdbdd0; margin-top: 8px; font-size: 0.88em; }}
+  .hero .pills {{ margin-top: 10px; color: #bdbdd0; font-size: 0.82em; }}
+
+  .goal {{ color: #ffbb5b; font-size: 0.88em; margin: 0 0 2px; line-height: 1.35; }}
+
+  .quick-actions {{ display: grid; grid-template-columns: 1fr 1fr 1fr;
+                    gap: 8px; margin-bottom: 8px; }}
+  .quick-actions-2 {{ margin-bottom: 14px; }}
+  .qa-btn {{ padding: 12px 6px; border: none; border-radius: 10px;
+             background: #e94560; color: #fff; font-size: 0.9em;
+             font-weight: 600; cursor: pointer; font-family: inherit;
+             width: 100%; }}
+  .qa-btn:active {{ transform: scale(0.97); }}
+  .qa-btn-ghost {{ background: #1e2e52; color: #e0e0e0; }}
+  .qa-btn[disabled] {{ opacity: 0.4; cursor: not-allowed; }}
+
+  .details-card {{ background: #16213e; border-radius: 12px; padding: 12px 16px;
+                   margin-bottom: 14px; }}
+  .details-card > summary {{ cursor: pointer; font-size: 1em; color: #e0e0e0;
+                             font-weight: 600; padding: 4px 0; list-style: none; }}
+  .details-card > summary::-webkit-details-marker {{ display: none; }}
+  .details-card[open] > summary {{ margin-bottom: 10px; }}
   .water-row {{ margin: 4px 0; }}
   .water-label {{ display: flex; justify-content: space-between; font-size: 0.9em;
                  color: #bdbdd0; margin-bottom: 6px; }}
@@ -648,7 +817,8 @@ def _render_dashboard(user: dict) -> str:
 <body>
 
 <h1>👋 Привіт, {_esc(first_name)}!</h1>
-<p class="sub">Твій прогрес · тільки для перегляду</p>
+{goal_html}
+<p class="sub">{_esc(adherence_line)}</p>
 
 <div class="tabs" role="tablist">
   <button class="tab active" data-view="day" role="tab">День</button>
@@ -659,8 +829,12 @@ def _render_dashboard(user: dict) -> str:
 
 <!-- ============ DAY VIEW ============ -->
 <div class="view active" data-view="day">
-  <div class="card">
-    <h2>📊 Сьогодні ({_esc(log.get('date',''))})</h2>
+  {hero_html}
+
+  {quick_actions_html}
+
+  <details class="card details-card">
+    <summary>📐 Деталі макро</summary>
     <div class="macro">
       <div class="macro-label"><span>Калорії</span><b>{round(cal)} / {DAILY_CAL_TARGET} ккал</b></div>
       <div class="bar">{_bar(cal, DAILY_CAL_TARGET)}</div>
@@ -678,7 +852,7 @@ def _render_dashboard(user: dict) -> str:
       <div class="bar">{_bar(f, MACRO_GRAM_TARGETS['fat'])}</div>
     </div>
     <p class="sub" style="margin-top:10px">Страв записано: {meal_count}</p>
-  </div>
+  </details>
 
   <div class="card">
     <h2>💧 Вода</h2>
@@ -784,10 +958,39 @@ def _render_dashboard(user: dict) -> str:
 </div>
 
 <script>
-  if (window.Telegram && window.Telegram.WebApp) {{
-    window.Telegram.WebApp.ready();
-    window.Telegram.WebApp.expand();
+  var TG = (window.Telegram && window.Telegram.WebApp) || null;
+  if (TG) {{
+    TG.ready();
+    TG.expand();
   }}
+  var DASHBOARD_TOKEN = {_js_token};
+
+  function doAction(action, btn) {{
+    if (btn && btn.disabled) return;
+    var url = '/api/dashboard' + (DASHBOARD_TOKEN ? '?t=' + encodeURIComponent(DASHBOARD_TOKEN) : '');
+    var initData = (TG && TG.initData) || '';
+    var body = 'action=' + encodeURIComponent(action) + '&initData=' + encodeURIComponent(initData);
+    if (btn) {{ btn.disabled = true; btn.style.opacity = 0.5; }}
+    fetch(url, {{
+      method: 'POST',
+      headers: {{ 'Content-Type': 'application/x-www-form-urlencoded' }},
+      body: body,
+      credentials: 'same-origin',
+    }}).then(function(r) {{ return r.text(); }}).then(function(html) {{
+      document.open(); document.write(html); document.close();
+    }}).catch(function(e) {{
+      if (btn) {{ btn.disabled = false; btn.style.opacity = 1; }}
+      console.error('action failed', e);
+    }});
+  }}
+
+  document.querySelectorAll('[data-action]').forEach(function(el) {{
+    el.addEventListener('click', function() {{ doAction(el.dataset.action, el); }});
+  }});
+  document.querySelectorAll('[data-close]').forEach(function(el) {{
+    el.addEventListener('click', function() {{ if (TG && TG.close) TG.close(); }});
+  }});
+
   document.querySelectorAll('.tab').forEach(function(btn) {{
     btn.addEventListener('click', function() {{
       var target = btn.dataset.view;
