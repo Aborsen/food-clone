@@ -1016,24 +1016,14 @@ def _render_dashboard(user: dict) -> str:
     el.addEventListener('click', function() {{ doAction(el.dataset.action, el); }});
   }});
   function closeApp() {{
-    var tg = window.Telegram && window.Telegram.WebApp;
-    var ud = (tg && tg.initDataUnsafe) || {{}};
-    // 'sender' = launched via attachment/menu button from the user's private
-    // chat with THIS bot. close() drops the overlay and returns them there;
-    // openTelegramLink would be a no-op because the link points to the chat
-    // they're already in.
-    var inBotChat = ud.chat_type === 'sender';
-    if (inBotChat) {{
-      if (tg && typeof tg.close === 'function') {{
-        try {{ tg.close(); return; }} catch(e) {{}}
-      }}
-    }} else {{
-      if (BOT_URL && tg && typeof tg.openTelegramLink === 'function') {{
-        try {{ tg.openTelegramLink(BOT_URL); return; }} catch(e) {{}}
-      }}
-      if (tg && typeof tg.close === 'function') {{
-        try {{ tg.close(); return; }} catch(e) {{}}
-      }}
+    // Try to navigate to the bot chat. If we're already there, this is a
+    // no-op — which is why we DO NOT return after the call: we always fall
+    // through to close() so the mini-app overlay drops either way.
+    if (BOT_URL && TG && typeof TG.openTelegramLink === 'function') {{
+      try {{ TG.openTelegramLink(BOT_URL); }} catch(e) {{}}
+    }}
+    if (TG && typeof TG.close === 'function') {{
+      try {{ TG.close(); return; }} catch(e) {{}}
     }}
     try {{ window.close(); }} catch(e) {{}}
     try {{ history.back(); }} catch(e) {{}}
